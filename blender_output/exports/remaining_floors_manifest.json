@@ -1,0 +1,248 @@
+{
+  "schema_version": 1,
+  "floors": {
+    "entertainment": {
+      "id": "NYONI_ENTERTAINMENT",
+      "display_name": "Entertainment",
+      "dimensions_m": [
+        16.0,
+        12.0,
+        3.4
+      ],
+      "glb": "entertainment_floor.glb",
+      "poster": "entertainment_isometric.png",
+      "agents": {
+        "story": {
+          "position": [
+            -4.7,
+            -2.65,
+            0.1
+          ],
+          "rotation": [
+            0,
+            0,
+            3.141592653589793
+          ],
+          "station": "STATION_STORY",
+          "accent": "#f1b5ae"
+        },
+        "motion": {
+          "position": [
+            4.5,
+            -2.65,
+            0.1
+          ],
+          "rotation": [
+            0,
+            0,
+            3.141592653589793
+          ],
+          "station": "STATION_MOTION",
+          "accent": "#9dc4fb"
+        },
+        "creative": {
+          "position": [
+            -0.2,
+            1.95,
+            0.1
+          ],
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "station": "STATION_CREATIVE",
+          "accent": "#d7b1f0"
+        }
+      },
+      "navigation": {
+        "APPROACH_STORY": [
+          -4.7,
+          -1.6,
+          0.0
+        ],
+        "APPROACH_MOTION": [
+          4.5,
+          -1.6,
+          0.0
+        ],
+        "APPROACH_CREATIVE": [
+          -0.2,
+          0.9,
+          0.0
+        ],
+        "WAYPOINT_SCREENING": [
+          4.3,
+          1.4,
+          0.0
+        ],
+        "WAYPOINT_CENTER": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "camera": {
+        "position": [
+          18.0,
+          -20.0,
+          17.0
+        ],
+        "target": [
+          0.0,
+          0.0,
+          0.75
+        ],
+        "ortho_scale": 23.5
+      }
+    },
+    "research_lab": {
+      "id": "NYONI_RESEARCH_LAB",
+      "display_name": "Research Lab",
+      "dimensions_m": [
+        16.0,
+        12.0,
+        3.4
+      ],
+      "glb": "research_lab_floor.glb",
+      "poster": "research_lab_isometric.png",
+      "agents": {
+        "scout": {
+          "position": [
+            -4.8,
+            -2.65,
+            0.1
+          ],
+          "rotation": [
+            0,
+            0,
+            3.141592653589793
+          ],
+          "station": "STATION_SCOUT",
+          "accent": "#9bdcb2"
+        },
+        "vault": {
+          "position": [
+            4.7,
+            -2.65,
+            0.1
+          ],
+          "rotation": [
+            0,
+            0,
+            3.141592653589793
+          ],
+          "station": "STATION_VAULT",
+          "accent": "#eedb92"
+        }
+      },
+      "navigation": {
+        "APPROACH_SCOUT": [
+          -4.8,
+          -1.6,
+          0.0
+        ],
+        "APPROACH_VAULT": [
+          4.7,
+          -1.6,
+          0.0
+        ],
+        "WAYPOINT_IDEA_TABLE": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "WAYPOINT_ARCHIVE": [
+          -4.5,
+          3.6,
+          0.0
+        ],
+        "WAYPOINT_CENTER": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "camera": {
+        "position": [
+          18.0,
+          -20.0,
+          17.0
+        ],
+        "target": [
+          0.0,
+          0.0,
+          0.75
+        ],
+        "ortho_scale": 23.5
+      }
+    },
+    "mission_control": {
+      "id": "NYONI_MISSION_CONTROL",
+      "display_name": "Mission Control",
+      "dimensions_m": [
+        16.0,
+        12.0,
+        3.4
+      ],
+      "glb": "mission_control_floor.glb",
+      "poster": "mission_control_isometric.png",
+      "agents": {
+        "migo": {
+          "position": [
+            0,
+            -3.0,
+            0.1
+          ],
+          "rotation": [
+            0,
+            0,
+            3.141592653589793
+          ],
+          "station": "STATION_MIGO",
+          "accent": "#b8eadb"
+        }
+      },
+      "navigation": {
+        "APPROACH_MIGO": [
+          0.0,
+          -1.85,
+          0.0
+        ],
+        "WAYPOINT_COMMAND": [
+          0.0,
+          -1.0,
+          0.0
+        ],
+        "WAYPOINT_DASHBOARD": [
+          0.0,
+          3.7,
+          0.0
+        ],
+        "WAYPOINT_BRIEFING": [
+          4.5,
+          1.6,
+          0.0
+        ],
+        "WAYPOINT_ENTRY": [
+          0.0,
+          -5.0,
+          0.0
+        ]
+      },
+      "camera": {
+        "position": [
+          18.0,
+          -20.0,
+          17.0
+        ],
+        "target": [
+          0.0,
+          0.0,
+          0.75
+        ],
+        "ortho_scale": 23.5
+      }
+    }
+  }
+}

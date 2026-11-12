@@ -1,0 +1,125 @@
+NYONI HQ — PHASE 1: COMMERCIALS FLOOR
+CODEX + BLENDER MCP PRODUCTION BRIEF
+
+TASK: Build the first production-quality, interactive-web-ready 3D environment for Nyoni HQ using my EXISTING Blender MCP connection.
+
+EXECUTE THE BUILD in Blender. Do not respond with only a plan or tutorial. Inspect the existing Blender scene before editing, save this as a NEW Nyoni HQ project, and do not overwrite other work (especially Colony Zero). Use Blender Python and the connected Blender tools as appropriate. Work checkpoint by checkpoint, create real geometry, render previews, inspect the previews, improve them, and export real GLB assets.
+
+REFERENCE IMAGES
+Three Nyoni HQ concept images are included in the references folder:
+- references/01_bot_workstation_closeup.png
+- references/02_commercials_floor_overview.png
+- references/03_commercials_floor_alternate.png
+Use these as PRIMARY visual references for art direction. They are concept images, not geometrically exact reconstruction blueprints. Image 02 defines the overall architectural style and furnishing standard. Image 03 provides an alternative floor arrangement. Image 01 guides bot detail, finishes, and lighting. Keep one consistent scene design, rather than mixing all three layouts.
+
+1. ART DIRECTION
+Create a premium miniature architectural 3D studio with the clean, open isometric character of Towers AI, but original for Nyoni Studios.
+- Warm ivory and soft-white walls; pale natural oak flooring
+- Floor-to-ceiling windows with slim charcoal frames and glass
+- Warm directional sunlight; realistic contact shadows; nuanced indirect fill
+- Cream/stone fabrics, natural woods, restrained metal, subtle glass
+- Beveled, tactile geometry; polished, slightly stylized proportions
+- Spatial breathing room and obvious walking paths
+- Cute small white bots with expressive black display faces and restrained department accent colors
+- Minimal signage and no distracting UI rendered onto walls
+Avoid a dark cyberpunk aesthetic, saturated glowing outlines, overdecorated desks, disproportionately oversized mascots, or a flat CSS-style illustration. Make the actual 3D room the centerpiece.
+
+2. FIRST ENVIRONMENT: NYONI COMMERCIALS
+Target floor footprint approximately 16m wide x 12m deep, ceiling around 3.4m. These dimensions are a starting guideline; tune room dimensions to match the images and improve staging. Build a cutaway office with two major perimeter walls and partial front edges so all work areas remain visible from an elevated orthographic three-quarter view.
+
+Zones and identities (visually clear from the main camera):
+A. SCOUT / Research / green: dedicated desk, dual monitors, notebook, lamp, compact shelving.
+B. CREATIVE / Art Director / lavender: desk, wide monitor, drawing tablet, reference/mood board.
+C. PULSE / Analytics / soft blue: desk with dual/triple monitors and clean workspace.
+D. HUNTER / Client Acquisition / amber: desk, communications monitor, tablet, notebook.
+E. Collaboration area: oval light-oak conference table, four to six chairs, mobile whiteboard; central but not blocking workstations.
+F. Glass meeting room: black-framed glass partitions, meeting table, chairs, presentation display.
+G. Lounge: cream sofa, round coffee table, rug, floor lamp, decor, and plants near windows.
+
+Fit the zones coherently into one uncluttered room. Keep all four bots visible at useful scale. Provide unobstructed walking paths between stations and collaboration spaces. Avoid floating furniture, intersecting meshes, or impossible architecture.
+
+3. REUSABLE BOT ASSET
+Create ONE original, reusable robot base with shared proportions and a consistent rig. Approximately 0.85–1.0m tall. White/ivory rounded hard-surface shell; glossy near-black face screen; two expressive emissive eyes; compact articulated arms/legs; rounded feet and hands; subtle antenna or ear/headphone module. Bots must be cute and immediately recognizable at an isometric camera distance but not babyish. No human faces.
+
+Make four variants by swapping small parts/materials rather than duplicating and changing the entire rig:
+- Scout: muted green
+- Creative: lavender purple
+- Pulse: soft blue
+- Hunter: warm amber
+
+Each variant should occupy a clearly associated station. Use IDs AGENT_SCOUT, AGENT_CREATIVE, AGENT_PULSE, AGENT_HUNTER.
+
+4. REUSABLE ANIMATIONS
+Make reusable named clips using an armature or equivalent web-exportable rig:
+- idle_loop (subtle breathing/sway)
+- walk_loop
+- typing_loop (hands positioned for desk work)
+- thinking_loop
+- celebrate_once
+- approval_alert_loop
+- talking_loop
+Animations should have believable pacing. Avoid foot sliding, jitter, and aggressive bobbing. Verify exported glTF animation names and playback, and clearly identify any clips that did not validate.
+
+5. MODULAR ASSET KIT
+Build reusable components as real mesh objects: wall, flooring and skirting modules; window and partition frames; glass; doors; desks; chairs; monitor/keyboard/tablet sets; cabinets; shelves; conference furniture; whiteboard; sofa; coffee table; rug; standing/desk lamps; plants; planters; small purposeful props. Use linked duplicates/instances and shared materials to reduce file weight. Prefer tidy topology, real-world scale, consistent origins and sensible bevel widths.
+
+6. BLENDER SCENE ORGANIZATION
+Save a distinct Blender file NYONI_HQ_Commercials_v01.blend. Use organized collections:
+NYONI_HQ/ARCHITECTURE
+NYONI_HQ/WINDOWS_AND_GLASS
+NYONI_HQ/FURNITURE
+NYONI_HQ/WORKSTATIONS
+NYONI_HQ/DECOR
+NYONI_HQ/BOT_BASE
+NYONI_HQ/AGENTS
+NYONI_HQ/LIGHTING
+NYONI_HQ/CAMERAS
+NYONI_HQ/COLLISION_AND_NAVIGATION
+
+Stable IDs for workstations: STATION_SCOUT, STATION_CREATIVE, STATION_PULSE, STATION_HUNTER. Preserve these names and transforms in the manifest. Add non-visual walkable waypoints and station approach positions for future Three.js navigation.
+
+7. CAMERAS AND LIGHT
+Create a main orthographic camera at an elevated three-quarter angle with the whole floor in frame, all stations legible, believable geometry and soft shadows. Add a second, higher layout-review angle and detail cameras for Scout and the bot. Light with a natural sun plus restrained fill, and modest real architectural accent fixtures. Use Eevee or Cycles for the high-quality reference previews; remember that Blender lighting does not automatically transfer to glTF. Propose simple real-time web lighting or baking where appropriate.
+
+Required previews (at least 1920x1080 for room views):
+- renders/commercials_isometric.png
+- renders/commercials_elevated.png
+- renders/scout_closeup.png
+- renders/bot_closeup.png
+
+8. EXPORT FOR THE REAL NYONI HQ WEBSITE
+The destination is a Next.js app with React Three Fiber / Three.js. Produce:
+- commercials_floor.glb: web-optimized static environment
+- nyoni_bot.glb: shared animated bot and actions
+- nyoni_hq_manifest.json: stable agent/station IDs, positions, rotations, scale, navigation waypoints, camera defaults, material variants, animation clips
+- README.md: loading, lighting, scale and animation guidance
+
+Check normals, UVs/textures, exportable materials, transforms, armature hierarchy, units, and animation clips. Keep web sizes practical. Use glTF-friendly PBR materials (do not depend on Blender-only shader nodes). Verify the GLB opens and renders; if you cannot verify a file, say so explicitly. Do not put private API keys, login credentials or project secrets in any export.
+
+9. INTERACTIVITY PREPARATION
+The final scene must allow the website to select a bot or workstation, zoom the camera to it, play named animations by job state (idle, researching/typing, waiting approval, completed), show a UI inspector, and move bots between defined locations. Do NOT build fake progress directly into Blender. Status and progress come later from a real task backend. Use the Blender scene for representation, animation and user interactions.
+
+10. CHECKPOINT EXECUTION
+Checkpoint A — architectural blockout, floorplan, four workstations, main camera; save and render for inspection.
+Checkpoint B — modular furniture kit, finished materials, windows/glass, props and lighting.
+Checkpoint C — one finished, rigged bot and four branded variants.
+Checkpoint D — seven reusable animations; verify action names.
+Checkpoint E — polished preview renders; iterate visibly against the supplied references.
+Checkpoint F — export GLB, JSON manifest and README, and validate in a viewer/browser when feasible.
+
+Save versioned, recoverable work at each checkpoint. If visual output falls materially short of the references, improve it before declaring complete. Never claim work succeeded without checking it.
+
+11. ACCEPTANCE CRITERIA
+- A clean, convincing 3D architectural cutaway, not flat drawings
+- Four visible, coherent workstations and no major overlap
+- Reference-quality lighting, materials and proportions
+- Four consistent cute bots based on one reusable original design
+- Named reusable animation clips, with export check
+- Organized editable .blend project and separate web-ready GLB assets
+- Stable identifiers, transforms and navigation points in JSON manifest
+- Four review renders and an integration README
+
+12. FINAL REPORT
+Give actual saved file paths, preview thumbnails/links, exported file sizes, clip names, tests performed, failed checks/limitations, and exact steps needed to connect assets to the existing NyoniHQ website.
+
+START WITH CHECKPOINT A USING THE ATTACHED THREE REFERENCE IMAGES. BUILD IN BLENDER NOW; DO NOT ONLY OUTLINE THE WORK.

@@ -1,0 +1,26 @@
+{
+  "name": "nyoni-hq",
+  "version": "0.6.0",
+  "private": true,
+  "type": "module",
+  "description": "Interactive 3D headquarters for Nyoni Studios",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 4173",
+    "build": "vite build",
+    "check": "node --check app.js && node --check creative-agent.js && node --check nyoni-agent.js && node --check hq-3d.js && node --check server/nyoni-runtime.js && node --check api/agents/status.js && node --check api/agents/run.js && eve build"
+  },
+  "dependencies": {
+    "@vercel/connect": "^2.9.2",
+    "ai": "^7.0.137",
+    "eve": "^1.0.0-rc.11",
+    "openai": "^7.56.0",
+    "three": "0.187.0",
+    "zod": "4.6.7"
+  },
+  "engines": {
+    "node": "24.x"
+  },
+  "devDependencies": {
+    "vite": "^8.3.8"
+  }
+}

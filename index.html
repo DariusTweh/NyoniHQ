@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="theme-color" content="#090f18"/>
+  <meta name="description" content="Nyoni HQ — a living isometric AI studio prototype"/>
+  <title>NYONI HQ · The Studio Is Alive</title>
+  <link rel="stylesheet" href="./styles.css"/>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./assets/vendor/three/three.module.js",
+        "three/addons/": "./assets/vendor/three/addons/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <aside class="sidebar">
+      <a href="#hq" class="brand" id="brand-link" aria-label="Nyoni HQ home">
+        <div class="brand-glyph"><span></span><span></span><span></span></div>
+        <div><div class="brand-name">NYONI<span>®</span></div><div class="brand-sub">AGENT HEADQUARTERS</div></div>
+      </a>
+      <div class="workspace-marker"><span class="marker-square"></span> STUDIO WORKSPACE <span class="workspace-chevron">⌄</span></div>
+      <div class="nav-label">WORKSPACE</div>
+      <nav class="main-nav" aria-label="Main navigation">
+        <button class="nav-item active" data-page="hq"><span class="nav-ico">⌂</span> Headquarters <span class="nav-shortcut">01</span></button>
+        <button class="nav-item" data-page="agents"><span class="nav-ico">◉</span> My agents <span class="nav-shortcut">08</span></button>
+        <button class="nav-item" data-page="tasks"><span class="nav-ico">☷</span> Task board <span id="sidebar-task-count" class="nav-counter">3</span></button>
+        <button class="nav-item" data-page="ideas"><span class="nav-ico">✧</span> Idea vault</button>
+        <button class="nav-item" data-page="outputs"><span class="nav-ico">▤</span> Deliverables</button>
+      </nav>
+      <div class="nav-label secondary-label">YOUR PRODUCTIONS</div>
+      <div class="project-item"><span class="project-dot amber"></span> Colony Zero <span class="project-id">CZ</span></div>
+      <div class="project-item"><span class="project-dot sky"></span> Palava 231 <span class="project-id">P231</span></div>
+      <div class="project-item"><span class="project-dot pink"></span> SANKOFI <span class="project-id">SK</span></div>
+      <div class="project-item"><span class="project-dot green"></span> Nyoni Commercials <span class="project-id">NC</span></div>
+      <div class="sidebar-bottom">
+        <button class="mini-status connection-status" id="connections-btn" type="button"><div class="status-orb"></div><div><strong id="runtime-title">Checking agent runtime</strong><small id="runtime-detail">Codex · Muse · Eve</small></div></button>
+        <div class="avatar-line"><div class="you-avatar">DT</div><div class="account-name"><strong>Studio founder</strong><small>Nyoni Studios</small></div><span class="dots">···</span></div>
+      </div>
+    </aside>
+
+    <div class="main-region">
+      <header class="topbar"><div class="breadcrumbs"><span>WORKSPACE</span> <span class="crumb-sep">/</span> <strong id="breadcrumb-current">HEADQUARTERS</strong></div><div class="top-actions"><span class="live-dot"></span><span class="top-date">STUDIO SYSTEM / V0.6</span><button class="top-icon" id="connections-top" title="Agent connections" aria-label="Open agent connections">⌁</button><button class="top-icon" id="help-btn" title="About this prototype" aria-label="About this prototype">?</button><button class="new-task-btn" id="new-task-top"><span>＋</span> New assignment</button></div></header>
+      <div class="main-body">
+        <div class="content-area">
+          <section class="heading-row"><div><div class="eyebrow">YOUR CREATIVE OPERATIONS, ALL IN ONE PLACE</div><h1 id="page-heading">The studio is alive<span class="tiny-star">✳</span></h1><p id="page-subtitle">A tiny world for the big things we're building.</p></div><div class="mode-tag" id="runtime-mode"><span></span> RUNTIME CHECK</div></section>
+          <div id="page-content"></div>
+        </div>
+        <aside class="inspector" id="inspector"></aside>
+      </div>
+    </div>
+  </div>
+  <div id="modal-root"></div>
+  <div id="toast-root" aria-live="polite"></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

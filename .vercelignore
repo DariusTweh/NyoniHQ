@@ -1,0 +1,8 @@
+blender_output/
+blender_pack/
+node_modules/
+.eve/
+.output/
+.git/
+*.blend
+*.blend1
