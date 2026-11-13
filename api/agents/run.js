@@ -1,4 +1,4 @@
-import { runNyoniAgent, verifyAccess } from '../../server/nyoni-runtime.js';
+import { codexModel, runNyoniAgent, verifyAccess } from '../../server/nyoni-runtime.js';
 import { beginAgentRun, completeAgentRun, failAgentRun } from '../../server/nyoni-store.js';
 
 export const maxDuration = 300;
@@ -27,7 +27,7 @@ export default async function handler(request, response) {
     try {
       studioJobId = await beginAgentRun({
         ...(request.body || {}),
-        model: process.env.NYONI_CODEX_MODEL || 'gpt-6-astra',
+        model: codexModel(),
       });
       if (studioJobId) send(response, { kind: 'progress', type: 'studio.saved', message: 'Run opened in Movie Studio' });
     } catch (storeError) {

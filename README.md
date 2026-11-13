@@ -18,6 +18,9 @@ Copy `.env.example` to `.env.local` and configure the provider keys you want:
 
 ```bash
 OPENAI_API_KEY=...     # Codex harness for all agents
+NYONI_CODEX_MODEL=gpt-6-luna # low-cost default; switch server-side later
+NYONI_REASONING_EFFORT=low
+NYONI_ALLOW_PREMIUM_MODELS=false # explicit safety lock for Astra/Sol
 MODEL_API_KEY=...      # optional Muse Spark collaborator
 NYONI_ACCESS_TOKEN=... # required before production execution
 SUPABASE_URL=...        # Nyoni AI Studio project URL
@@ -30,6 +33,8 @@ The Vite development server starts the website, Codex/Muse bridge routes, and th
 The checked-in Three.js vendor files and GLBs are served locally. Do not open `index.html` directly with `file://`; browser module, agent routes, and GLB security rules require the local HTTP server.
 
 Production requires server-side environment variables and an access token or full application authentication. The API refuses paid production execution when `NYONI_ACCESS_TOKEN` is missing.
+
+Cost policy: HQ defaults to `gpt-6-luna` with low reasoning and concise outputs. `gpt-6-astra` and `gpt-6.1-sol` automatically fall back to Luna unless `NYONI_ALLOW_PREMIUM_MODELS=true` is deliberately configured on the server.
 
 When the Supabase variables are configured, every HQ run is opened and completed in the existing Movie Studio `generation_jobs` table. Database persistence is best-effort: a temporary database failure does not discard a completed Codex deliverable.
 
