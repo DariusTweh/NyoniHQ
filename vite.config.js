@@ -52,7 +52,10 @@ function nyoniAgentApi() {
 }
 
 export default defineConfig({
-  plugins: [nyoniAgentApi(), eveVite()],
+  // Production uses the OpenAI Codex + Muse API functions. Eve stays as a
+  // local Creative fallback; its Vite plugin expects a full Vercel service
+  // graph and must not wrap this plain Vite production build.
+  plugins: [nyoniAgentApi(), ...(process.env.VERCEL ? [] : [eveVite()])],
   server: {
     host: '127.0.0.1',
     port: 4173,

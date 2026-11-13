@@ -25,7 +25,7 @@ const SEED_TASKS=[
 const KEY='nyoni-hq-v01';
 const blankState=()=>({page:'hq',floor:0,agent:'scout',task:null,tasks:structuredClone(SEED_TASKS),ideas:[{id:'idea-sample',title:'Commercial campaign: event transformation',description:'Before-and-after event setup concept with one continuous camera transition.',sample:true},{id:'idea-sample2',title:'SANKOFI 3D character style trials',description:'Explore material and lighting variations for the sculptural mythic look.',sample:true}],events:[{message:'Prototype workspace opened',time:'Local demo'},{message:'Three sample assignments loaded',time:'Sample data'}]});
 let state=blankState();
-let runtime={loading:true,codex:false,muse:false,protected:true,codexModel:'gpt-6-astra',museModel:'muse-spark-1.3'};
+let runtime={loading:true,codex:false,muse:false,eve:true,protected:true,codexModel:'gpt-6-astra',museModel:'muse-spark-1.3'};
 try {const saved=JSON.parse(localStorage.getItem(KEY)); if(saved && Array.isArray(saved.tasks)&&Array.isArray(saved.ideas)){state={...state,...saved,page:'hq'};}}catch{}
 state.tasks.forEach(t=>{if(t.status==='running'){t.status='failed';t.error='The previous live run was interrupted. Retry when the Creative runtime is available.';t.runPhase='';}});
 const $=s=>document.querySelector(s);
@@ -42,16 +42,16 @@ function runtimeLabel(){
  if(runtime.codex)return 'CODEX LIVE';
  return 'CODEX READY';
 }
-function agentIsLive(a){return Boolean(runtime.codex||a.id==='creative')}
+function agentIsLive(a){return Boolean(runtime.codex||(a.id==='creative'&&runtime.eve))}
 function providerLabel(a){
  if(runtime.codex)return runtime.muse?'CODEX · MUSE':'CODEX';
- if(a.id==='creative')return 'EVE LIVE';
+ if(a.id==='creative'&&runtime.eve)return 'EVE LIVE';
  return 'CODEX READY';
 }
 function updateRuntimeChrome(){
  const title=$('#runtime-title'),detail=$('#runtime-detail'),mode=$('#runtime-mode');
  if(title)title.textContent=runtime.codex?(runtime.muse?'Codex + Muse connected':'Codex connected'):'Codex keys needed';
- if(detail)detail.textContent=runtime.codex?`8 live agents · Muse ${runtime.muse?'on':'off'}`:'Creative fallback live · 7 ready';
+ if(detail)detail.textContent=runtime.codex?`8 live agents · Muse ${runtime.muse?'on':'off'}`:runtime.eve?'Creative fallback live · 7 ready':'8 Codex profiles ready · keys needed';
  if(mode)mode.innerHTML=`<span></span> ${runtimeLabel()}`;
 }
 function botSvg(a,size=1){const c=a.accent;return `<g transform="scale(${size})">
@@ -195,7 +195,7 @@ function connectionsModal(){
 function previewText(t){const a=agent(t.agent),q=t.title;const formats={scout:`DEMO RESEARCH OUTLINE — ${q}\n1. Define target audience and geography.\n2. Collect evidence from trusted industry and business sources.\n3. Compare key opportunities, gaps, and risks.\n4. Prepare a cited report for MIGO review.\nNO LIVE RESEARCH WAS PERFORMED.`,creative:`DEMO CAMPAIGN DIRECTION — ${q}\nConcept: “Make the moment unforgettable.”\nVisuals: tactile cinematic close-ups, strong natural lighting, and an unexpected reveal.\nDeliverables: 3 stills, one 9:16 short video creative brief, ad caption and CTA.\nNO AI MODEL WAS CALLED.`,story:`DEMO SCRIPT PLAN — ${q}\nOpening: establish stakes through a visual action, not exposition.\nMiddle: set up a character disagreement with a specific consequence.\nClosing: reveal a new complication that motivates the next scene.\nNO AI MODEL WAS CALLED.`,hunter:`DEMO CLIENT OUTREACH PLAN — ${q}\nChoose target category and region; validate business details; review recent creative output; draft a specific, non-spammy proposal; request human approval before outreach.\nNO PROSPECTS WERE LOOKED UP OR CONTACTED.`,pulse:`DEMO ANALYTICS CHECKLIST — ${q}\nTrack publishing cadence, reach, saves, CTR, qualified inquiries, conversion rate and client retention. Separate verified source data from estimates.\nNO LIVE METRICS WERE READ.`,motion:`DEMO PRODUCTION PLAN — ${q}\nShot 1: angled establishing, 24fps, intentional asymmetry.\nShot 2: motivated camera move and facial reaction.\nShot 3: clean product or story reveal.\nProduction notes: continuity, staging, materials, lighting, physics.\nNO VIDEO WAS GENERATED.`,vault:`DEMO IDEA BRIEF — ${q}\nCore hook: one clear visual twist in the opening seconds.\nDifferentiate: lean into Nyoni's distinctive storytelling rather than copying a trend.\nTest: three concept variants, scored for feasibility and originality.\nNO AI MODEL WAS CALLED.`,migo:`DEMO MISSION BRIEF — ${q}\n1. Clarify outcome and constraints.\n2. Assign the relevant specialist.\n3. Establish review checkpoints.\n4. Require approval before publication, outreach or spend.\nNO AGENTS WERE ACTUALLY DELEGATED.`};return formats[a.id]||formats.migo}
 async function previewTask(){
  const t=task(state.task);if(!t||t.status==='running')return;
- if(!runtime.codex&&t.agent!=='creative'){
+ if(!runtime.codex&&!(t.agent==='creative'&&runtime.eve)){
   connectionsModal();toast('Connect Codex to activate this agent');return;
  }
  const a=agent(t.agent);

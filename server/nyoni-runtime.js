@@ -77,6 +77,7 @@ export function runtimeStatus(env = process.env) {
   return {
     codex: Boolean(env.OPENAI_API_KEY),
     muse: Boolean(env.MODEL_API_KEY),
+    eve: !env.VERCEL,
     protected: !env.VERCEL || Boolean(env.NYONI_ACCESS_TOKEN),
     codexModel: env.NYONI_CODEX_MODEL || 'gpt-6-astra',
     museModel: env.NYONI_MUSE_MODEL || 'muse-spark-1.3',
