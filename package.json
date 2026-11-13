@@ -1,6 +1,6 @@
 {
   "name": "nyoni-hq",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "Interactive 3D headquarters for Nyoni Studios",
@@ -10,6 +10,8 @@
     "check": "node --check app.js && node --check creative-agent.js && node --check nyoni-agent.js && node --check hq-3d.js && node --check server/nyoni-runtime.js && node --check api/agents/status.js && node --check api/agents/run.js && eve build"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.112.4",
+    "@supabase/supabase-js": "2.112.4",
     "@vercel/connect": "^2.9.2",
     "ai": "^7.0.137",
     "eve": "^1.0.0-rc.11",

@@ -1,4 +1,5 @@
 import { runNyoniAgent, verifyAccess } from '../../server/nyoni-runtime.js';
+import { beginAgentRun, completeAgentRun, failAgentRun } from '../../server/nyoni-store.js';
 
 export const maxDuration = 300;
 
@@ -21,13 +22,35 @@ export default async function handler(request, response) {
   response.setHeader('Connection', 'keep-alive');
   response.flushHeaders?.();
 
+  let studioJobId = null;
   try {
+    try {
+      studioJobId = await beginAgentRun({
+        ...(request.body || {}),
+        model: process.env.NYONI_CODEX_MODEL || 'gpt-6-astra',
+      });
+      if (studioJobId) send(response, { kind: 'progress', type: 'studio.saved', message: 'Run opened in Movie Studio' });
+    } catch (storeError) {
+      console.error('Movie Studio run creation failed', storeError);
+      send(response, { kind: 'progress', type: 'studio.warning', message: 'Codex is running, but Movie Studio could not open the run ledger' });
+    }
     const result = await runNyoniAgent({
       ...(request.body || {}),
       onEvent: (event) => send(response, { kind: 'progress', ...event }),
     });
-    send(response, { kind: 'result', ...result });
+    try {
+      await completeAgentRun(studioJobId, result);
+    } catch (storeError) {
+      console.error('Movie Studio run completion failed', storeError);
+      send(response, { kind: 'progress', type: 'studio.warning', message: 'Deliverable is ready, but its Movie Studio ledger update failed' });
+    }
+    send(response, { kind: 'result', ...result, studioJobId });
   } catch (error) {
+    try {
+      await failAgentRun(studioJobId, error);
+    } catch (storeError) {
+      console.error('Movie Studio run failure update failed', storeError);
+    }
     send(response, { kind: 'error', code: error?.code, message: error?.message || 'Agent run failed.' });
   } finally {
     response.end();

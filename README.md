@@ -20,6 +20,9 @@ Copy `.env.example` to `.env.local` and configure the provider keys you want:
 OPENAI_API_KEY=...     # Codex harness for all agents
 MODEL_API_KEY=...      # optional Muse Spark collaborator
 NYONI_ACCESS_TOKEN=... # required before production execution
+SUPABASE_URL=...        # Nyoni AI Studio project URL
+SUPABASE_SERVICE_ROLE_KEY=... # server-only; never expose in the browser
+NYONI_STUDIO_PROJECT_ID=...   # movie project recorded in generation_jobs
 ```
 
 The Vite development server starts the website, Codex/Muse bridge routes, and the existing Eve Creative-agent fallback together.
@@ -27,6 +30,8 @@ The Vite development server starts the website, Codex/Muse bridge routes, and th
 The checked-in Three.js vendor files and GLBs are served locally. Do not open `index.html` directly with `file://`; browser module, agent routes, and GLB security rules require the local HTTP server.
 
 Production requires server-side environment variables and an access token or full application authentication. The API refuses paid production execution when `NYONI_ACCESS_TOKEN` is missing.
+
+When the Supabase variables are configured, every HQ run is opened and completed in the existing Movie Studio `generation_jobs` table. Database persistence is best-effort: a temporary database failure does not discard a completed Codex deliverable.
 
 ## What works today
 
