@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 
 function storeConfig(env = process.env) {
   return {
-    url: env.SUPABASE_URL,
+    url: env.SUPABASE_URL || env.NEXT_PUBLIC_SUPABASE_URL,
     serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY,
     projectId: env.NYONI_STUDIO_PROJECT_ID,
   };

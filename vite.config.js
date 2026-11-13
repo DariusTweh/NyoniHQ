@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import { eveVite } from 'eve/vite';
-import { runNyoniAgent, runtimeStatus, verifyAccess } from './server/nyoni-runtime.js';
+import { codexModel, runNyoniAgent, runtimeStatus, verifyAccess } from './server/nyoni-runtime.js';
+import { beginAgentRun, completeAgentRun, failAgentRun } from './server/nyoni-store.js';
 
 async function readJson(request) {
   let body = '';
@@ -34,14 +35,33 @@ function nyoniAgentApi() {
         response.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
         response.setHeader('Cache-Control', 'no-cache, no-transform');
         const send = (event) => response.write(`data: ${JSON.stringify(event)}\n\n`);
+        let studioJobId = null;
         try {
           const body = await readJson(request);
+          try {
+            studioJobId = await beginAgentRun({ ...body, model: codexModel() });
+            if (studioJobId) send({ kind: 'progress', type: 'studio.saved', message: 'Run opened in Movie Studio' });
+          } catch (storeError) {
+            console.error('Movie Studio run creation failed', storeError);
+            send({ kind: 'progress', type: 'studio.warning', message: 'Codex is running, but Movie Studio could not open the run ledger' });
+          }
           const result = await runNyoniAgent({
             ...body,
             onEvent: (event) => send({ kind: 'progress', ...event }),
           });
-          send({ kind: 'result', ...result });
+          try {
+            await completeAgentRun(studioJobId, result);
+          } catch (storeError) {
+            console.error('Movie Studio run completion failed', storeError);
+            send({ kind: 'progress', type: 'studio.warning', message: 'Deliverable is ready, but its Movie Studio ledger update failed' });
+          }
+          send({ kind: 'result', ...result, studioJobId });
         } catch (error) {
+          try {
+            await failAgentRun(studioJobId, error);
+          } catch (storeError) {
+            console.error('Movie Studio run failure update failed', storeError);
+          }
           send({ kind: 'error', code: error?.code, message: error?.message || 'Agent run failed.' });
         } finally {
           response.end();
