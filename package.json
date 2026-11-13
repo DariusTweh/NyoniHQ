@@ -7,16 +7,17 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 4173",
     "build": "vite build",
-    "check": "node --check app.js && node --check creative-agent.js && node --check nyoni-agent.js && node --check hq-3d.js && node --check server/nyoni-runtime.js && node --check api/agents/status.js && node --check api/agents/run.js && eve build"
+    "check": "node --check app.js && node --check creative-agent.js && node --check nyoni-agent.js && node --check hq-3d.js && node --check server/nyoni-runtime.js && node --check server/studio-tools.js && node --check server/schedule-runner.js && node --check server/routes/api/activity.get.js && node --check server/routes/api/cron/studio.get.js && node --check server/routes/api/agents/status.js && node --check server/routes/api/agents/run.js && node --check workflows/nyoni-assignment.js && eve build"
   },
   "dependencies": {
-    "@supabase/supabase-js": "2.112.4",
     "@supabase/supabase-js": "2.112.4",
     "@vercel/connect": "^2.9.2",
     "ai": "^7.0.137",
     "eve": "^1.0.0-rc.11",
+    "nitro": "^3.0.261103-rc",
     "openai": "^7.56.0",
     "three": "0.187.0",
+    "workflow": "^5.5.0",
     "zod": "4.6.7"
   },
   "engines": {

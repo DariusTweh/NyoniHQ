@@ -12,6 +12,39 @@ function accessToken() {
   return sessionStorage.getItem('nyoni-access-token') || '';
 }
 
+function studioHeaders() {
+  return { 'Content-Type': 'application/json', 'X-Nyoni-Access-Token': accessToken() };
+}
+
+export async function listStudioAssignments() {
+  const response = await fetch('/api/assignments', { headers: studioHeaders(), cache: 'no-store' });
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `Assignment sync failed with ${response.status}`);
+  return (await response.json()).assignments || [];
+}
+
+export async function listStudioActivity() {
+  const response = await fetch('/api/activity', { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Studio activity failed with ${response.status}`);
+  return (await response.json()).activity || [];
+}
+
+export async function createStudioAssignment(task) {
+  const response = await fetch('/api/assignments', {
+    method: 'POST', headers: studioHeaders(),
+    body: JSON.stringify({ title: task.title, agentId: task.agent, project: task.project, sourceUrl: task.sourceUrl || null }),
+  });
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `Assignment creation failed with ${response.status}`);
+  return (await response.json()).assignment;
+}
+
+export async function updateStudioAssignment(assignmentId, action) {
+  const response = await fetch('/api/assignments', {
+    method: 'PATCH', headers: studioHeaders(), body: JSON.stringify({ assignmentId, action }),
+  });
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `Assignment action failed with ${response.status}`);
+  return (await response.json()).assignment;
+}
+
 export function saveStudioPasscode(value) {
   const token = String(value || '').trim();
   if (token) sessionStorage.setItem('nyoni-access-token', token);
@@ -26,8 +59,7 @@ export async function runCodexAssignment(task, onUpdate = () => {}) {
   const response = await fetch('/api/agents/run', {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'X-Nyoni-Access-Token': accessToken(),
+      ...studioHeaders(),
     },
     body: JSON.stringify({
       agentId: task.agent,

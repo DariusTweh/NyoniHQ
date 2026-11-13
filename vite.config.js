@@ -1,7 +1,27 @@
 import { defineConfig } from 'vite';
 import { eveVite } from 'eve/vite';
+import { nitro } from 'nitro/vite';
+import { workflow } from 'workflow/vite';
+import { cpSync, mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { codexModel, runNyoniAgent, runtimeStatus, verifyAccess } from './server/nyoni-runtime.js';
 import { beginAgentRun, completeAgentRun, failAgentRun } from './server/nyoni-store.js';
+
+const projectRoot = fileURLToPath(new URL('.', import.meta.url));
+
+function copy3dAssets() {
+  return {
+    name: 'copy-nyoni-3d-assets',
+    apply: 'build',
+    writeBundle(options) {
+      const outputDirectory = options.dir || resolve(projectRoot, 'dist');
+      const target = resolve(outputDirectory, 'assets/3d');
+      mkdirSync(target, { recursive: true });
+      cpSync(resolve(projectRoot, 'assets/3d'), target, { recursive: true });
+    },
+  };
+}
 
 async function readJson(request) {
   let body = '';
@@ -75,7 +95,16 @@ export default defineConfig({
   // Production uses the OpenAI Codex + Muse API functions. Eve stays as a
   // local Creative fallback; its Vite plugin expects a full Vercel service
   // graph and must not wrap this plain Vite production build.
-  plugins: [nyoniAgentApi(), ...(process.env.VERCEL ? [] : [eveVite()])],
+  plugins: [
+    nitro(),
+    workflow({ dirs: ['workflows'] }),
+    nyoniAgentApi(),
+    copy3dAssets(),
+    ...(process.env.VERCEL ? [] : [eveVite()]),
+  ],
+  nitro: {
+    serverDir: './server',
+  },
   server: {
     host: '127.0.0.1',
     port: 4173,

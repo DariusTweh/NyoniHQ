@@ -7,12 +7,15 @@ const ASSET_ROOT = './assets/3d/';
 const AGENT_COLORS = {
   scout: '#79c98f', creative: '#b68de0', pulse: '#69aee8', hunter: '#e49a55',
   story: '#f1b5ae', motion: '#9dc4fb', vault: '#eedb92', migo: '#b8eadb',
+  ledger: '#80d8c2', margin: '#f0c56f', treasury: '#86bff2', audit: '#e99ba8',
 };
 const AGENT_IDENTITIES = {
   scout: ['SCOUT', 'Research & Discovery'], creative: ['CREATIVE', 'Art Director'],
   pulse: ['PULSE', 'Analytics'], hunter: ['HUNTER', 'Client Acquisition'],
   story: ['STORY', 'Screenwriting'], motion: ['MOTION', 'Production Designer'],
   vault: ['VAULT', 'Ideas & Experiments'], migo: ['MIGO', 'Studio Director'],
+  ledger: ['LEDGER', 'Financial Controller'], margin: ['MARGIN', 'FP&A Analyst'],
+  treasury: ['TREASURY', 'Cash Operations'], audit: ['AUDIT', 'Risk & Compliance'],
 };
 
 let activeExperience = null;
@@ -128,7 +131,7 @@ function createNameBanner(agentId, accentHex) {
   return sprite;
 }
 
-function createExperience(host, floorSlug, initialAgent) {
+function createExperience(host, floorSlug, initialAgent, agentIds = []) {
   const canvas = host.querySelector('canvas');
   const status = host.querySelector('[data-3d-status]');
   const progressBar = host.querySelector('[data-3d-progress]');
@@ -342,7 +345,11 @@ function createExperience(host, floorSlug, initialAgent) {
       const scoutManifest = manifest.floors.commercials.agents.scout;
       const scoutPosition = blenderPositionToThree(scoutManifest.position);
       const scoutRotation = scoutManifest.rotation[2];
-      const floorAgents = Object.entries(floorData.agents);
+      const templateAgents = Object.entries(floorData.agents);
+      const floorAgents = agentIds.length ? templateAgents.map(([templateId,data],index)=>{
+        const agentId=agentIds[index]||templateId;
+        return [agentId,{...data,accent:AGENT_COLORS[agentId]||data.accent}];
+      }) : templateAgents;
       if (!floorAgents.some(([id]) => id === selectedAgent)) selectedAgent = floorAgents[0]?.[0];
 
       floorAgents.forEach(([agentId, data], index) => {
@@ -418,13 +425,13 @@ function createExperience(host, floorSlug, initialAgent) {
   };
 }
 
-export function mountHQ3D({ hostId = 'hq-3d-stage', floorSlug = 'commercials', selectedAgent = 'scout' } = {}) {
+export function mountHQ3D({ hostId = 'hq-3d-stage', floorSlug = 'commercials', selectedAgent = 'scout', agentIds = [] } = {}) {
   activeExperience?.destroy();
   activeExperience = null;
   const host = document.getElementById(hostId);
   if (!host) return null;
   try {
-    activeExperience = createExperience(host, floorSlug, selectedAgent);
+    activeExperience = createExperience(host, floorSlug, selectedAgent, agentIds);
   } catch (error) {
     console.error('Nyoni HQ WebGL initialization failed', error);
     host.classList.add('has-error');
