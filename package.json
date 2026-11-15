@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 4173",
     "build": "vite build",
-    "check": "node --check app.js && node --check creative-agent.js && node --check nyoni-agent.js && node --check hq-3d.js && node --check server/nyoni-runtime.js && node --check server/studio-tools.js && node --check server/schedule-runner.js && node --check server/routes/api/activity.get.js && node --check server/routes/api/cron/studio.get.js && node --check server/routes/api/agents/status.js && node --check server/routes/api/agents/run.js && node --check workflows/nyoni-assignment.js && eve build"
+    "check": "node --check app.js && node --check creative-agent.js && node --check nyoni-agent.js && node --check hq-3d.js && node --check server/google-tools.js && node --check server/nyoni-runtime.js && node --check server/studio-tools.js && node --check server/schedule-runner.js && node --check server/routes/api/activity.get.js && node --check server/routes/api/cron/studio.get.js && node --check server/routes/api/agents/status.js && node --check server/routes/api/agents/run.js && node --check server/routes/api/integrations/google/inbox.get.js && node --check workflows/nyoni-assignment.js && eve build"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.112.4",

@@ -1,6 +1,7 @@
 import { defineEventHandler, getHeader, readBody, sendStream, setHeader, setResponseStatus } from 'nitro/h3';
 import { codexModel, runNyoniAgent, verifyAccess } from '../../../nyoni-runtime.js';
 import { beginAgentRun, completeAgentRun, failAgentRun } from '../../../nyoni-store.js';
+import { getHunterInboxContext } from '../../../google-tools.js';
 
 export default defineEventHandler(async (event) => {
   if (!verifyAccess(getHeader(event, 'x-nyoni-access-token'))) {
@@ -18,7 +19,13 @@ export default defineEventHandler(async (event) => {
       try {
         studioJobId = await beginAgentRun({ ...body, model: codexModel() });
         if (studioJobId) send({ kind: 'progress', type: 'studio.saved', message: 'Run opened in Movie Studio' });
-        const result = await runNyoniAgent({ ...body, onEvent: (progress) => send({ kind: 'progress', ...progress }) });
+        let projectContext = body.projectContext || '';
+        if (body.agentId === 'hunter') {
+          send({ kind: 'progress', type: 'gmail.reading', message: 'Hunter is checking the connected Gmail inbox' });
+          const gmailContext = await getHunterInboxContext();
+          projectContext = [projectContext, gmailContext].filter(Boolean).join('\n\n');
+        }
+        const result = await runNyoniAgent({ ...body, projectContext, onEvent: (progress) => send({ kind: 'progress', ...progress }) });
         await completeAgentRun(studioJobId, result);
         send({ kind: 'result', ...result, studioJobId });
       } catch (error) {

@@ -60,7 +60,7 @@ export async function listStudioActivity() {
 export async function createStudioAssignment(task) {
   const response = await request('/api/assignments', {
     method: 'POST', headers: studioHeaders(),
-    body: JSON.stringify({ title: task.title, agentId: task.agent, project: task.project, sourceUrl: task.sourceUrl || null }),
+    body: JSON.stringify({ title: task.title, agentId: task.agent, project: task.project, sourceUrl: task.sourceUrl || null, workflowKind: task.workflowKind || null }),
   }, 'The assignment could not be created.');
   return (await response.json()).assignment;
 }
@@ -80,6 +80,20 @@ export function saveStudioPasscode(value) {
 
 export function hasStudioPasscode() {
   return Boolean(accessToken());
+}
+
+export async function getGoogleAuthorizationUrl() {
+  const response = await request('/api/integrations/google/authorize', {
+    headers: studioHeaders(), cache: 'no-store',
+  }, 'Google authorization could not be started.');
+  return (await response.json()).url;
+}
+
+export async function getGmailInbox() {
+  const response = await request('/api/integrations/google/inbox?limit=8', {
+    headers: studioHeaders(), cache: 'no-store',
+  }, 'Hunter could not read the connected Gmail inbox.');
+  return (await response.json()).messages || [];
 }
 
 export async function runCodexAssignment(task, onUpdate = () => {}) {

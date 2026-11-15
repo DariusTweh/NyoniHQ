@@ -45,12 +45,14 @@ export async function createAssignment(payload, env = process.env) {
   const mediaAgents = new Set(['lumina', 'reframe', 'nova', 'kinetic', 'cutline', 'sonora', 'vox', 'rally']);
   const agentId = payload.agentId || 'migo';
   const isCommercialPipeline = studio.projectName === 'Nyoni Commercials' && (agentId === 'rally' || /campaign|commercial|advert|launch creative/i.test(title));
-  const workflowKind = isCommercialPipeline ? 'commercial_pipeline' : mediaAgents.has(agentId) ? 'studio_generation' : /carousel|instagram slides?|social slides?/i.test(title) ? 'carousel' : 'general';
+  const allowedWorkflowKinds = new Set(['general', 'carousel', 'studio_generation', 'commercial_pipeline', 'autonomous_content_pipeline']);
+  const requestedWorkflowKind = allowedWorkflowKinds.has(payload.workflowKind) ? payload.workflowKind : null;
+  const workflowKind = requestedWorkflowKind || (isCommercialPipeline ? 'commercial_pipeline' : mediaAgents.has(agentId) ? 'studio_generation' : /carousel|instagram slides?|social slides?/i.test(title) ? 'carousel' : 'general');
   const idempotencyKey = payload.idempotencyKey || `hq:${studio.ownerId}:${Date.now()}:${crypto.randomUUID()}`;
   const { data, error } = await studio.client.from('nyoni_assignments').insert({
     project_id: studio.projectId, owner_id: studio.ownerId, title: title.slice(0, 2000),
     agent_id: agentId, status: 'queued', workflow_kind: workflowKind,
-    approval_tier: ['carousel', 'studio_generation'].includes(workflowKind) ? 'B' : 'A', source_url: payload.sourceUrl || null,
+    approval_tier: ['carousel', 'studio_generation', 'autonomous_content_pipeline'].includes(workflowKind) ? 'B' : 'A', source_url: payload.sourceUrl || null,
     idempotency_key: idempotencyKey, request: { project: studio.projectName, brief: title, sourceUrl: payload.sourceUrl || null },
   }).select('*').single();
   if (error) throw new Error(`Assignment creation failed: ${error.message}`);

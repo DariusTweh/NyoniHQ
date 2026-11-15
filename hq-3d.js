@@ -93,24 +93,24 @@ function createNameBanner(agentId, accentHex) {
   const context = canvas.getContext('2d');
   const accent = accentHex || AGENT_COLORS[agentId] || '#b8eadb';
   context.clearRect(0, 0, canvas.width, canvas.height);
-  context.shadowColor = 'rgba(0,0,0,.55)';
-  context.shadowBlur = 22;
-  context.fillStyle = 'rgba(12, 23, 20, .92)';
+  context.shadowColor = 'rgba(68,57,45,.18)';
+  context.shadowBlur = 18;
+  context.fillStyle = 'rgba(255, 252, 246, .94)';
   context.beginPath();
   context.roundRect(12, 12, 744, 154, 34);
   context.fill();
   context.shadowBlur = 0;
-  context.strokeStyle = 'rgba(244, 246, 231, .28)';
+  context.strokeStyle = 'rgba(70, 80, 72, .18)';
   context.lineWidth = 3;
   context.stroke();
   context.fillStyle = accent;
   context.beginPath();
   context.roundRect(34, 42, 12, 94, 6);
   context.fill();
-  context.fillStyle = '#f1f4e9';
+  context.fillStyle = '#18231f';
   context.font = '800 48px Inter, Arial, sans-serif';
   context.fillText(name, 72, 82);
-  context.fillStyle = '#aebbb0';
+  context.fillStyle = '#65736c';
   context.font = '600 25px Inter, Arial, sans-serif';
   context.fillText(role.toUpperCase(), 72, 126);
   context.fillStyle = accent;
@@ -168,20 +168,20 @@ function updateWorkBubble(sprite, status, detail) {
   const context = canvas.getContext('2d');
   const accent = sprite.userData.accent || '#b8eadb';
   const name = AGENT_IDENTITIES[sprite.userData.agentId]?.[0] || sprite.userData.agentId.toUpperCase();
-  const label = { running: 'WORKING', queued: 'QUEUED', review: 'NEEDS APPROVAL', handoff: 'HANDING OFF', complete: 'COMPLETED', failed: 'BLOCKED' }[status] || status.toUpperCase();
+  const label = { running: 'WORKING', queued: 'QUEUED', review: 'NEEDS APPROVAL', handoff: 'HANDING OFF', complete: 'COMPLETED', failed: 'NEEDS RETRY' }[status] || status.toUpperCase();
   context.clearRect(0, 0, canvas.width, canvas.height);
-  context.shadowColor = 'rgba(0,0,0,.62)';
-  context.shadowBlur = 28;
-  context.fillStyle = 'rgba(10,20,17,.96)';
+  context.shadowColor = 'rgba(68,57,45,.22)';
+  context.shadowBlur = 24;
+  context.fillStyle = 'rgba(255,252,246,.97)';
   context.beginPath(); context.roundRect(12, 12, 876, 174, 38); context.fill();
   context.shadowBlur = 0;
   context.strokeStyle = accent; context.globalAlpha = .72; context.lineWidth = 4; context.stroke(); context.globalAlpha = 1;
   context.fillStyle = accent; context.beginPath(); context.arc(62, 65, 13, 0, Math.PI * 2); context.fill();
-  context.fillStyle = '#f2f5e9'; context.font = '800 34px Inter, Arial'; context.fillText(`${name} · ${label}`, 94, 77);
-  context.fillStyle = '#b8c5bb'; context.font = '600 27px Inter, Arial';
+  context.fillStyle = '#17231f'; context.font = '800 34px Inter, Arial'; context.fillText(`${name} · ${label}`, 94, 77);
+  context.fillStyle = '#66746d'; context.font = '600 27px Inter, Arial';
   const message = String(detail || 'Working on a studio mission');
   context.fillText(message.length > 66 ? `${message.slice(0, 63)}…` : message, 45, 137);
-  context.fillStyle = 'rgba(10,20,17,.96)'; context.beginPath(); context.moveTo(410,185); context.lineTo(450,218); context.lineTo(490,185); context.fill();
+  context.fillStyle = 'rgba(255,252,246,.97)'; context.beginPath(); context.moveTo(410,185); context.lineTo(450,218); context.lineTo(490,185); context.fill();
   sprite.userData.texture.needsUpdate = true;
 }
 
@@ -498,7 +498,7 @@ function createCampusExperience(host, initialAgent, agents, initialDepartment, i
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.2;
+  renderer.toneMappingExposure = 1.36;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
 
@@ -514,12 +514,12 @@ function createCampusExperience(host, initialAgent, agents, initialDepartment, i
   controls.autoRotate = false;
   camera.lookAt(controls.target);
 
-  scene.add(new THREE.HemisphereLight(0xf4efdc, 0x07110d, 2.7));
-  const key = new THREE.DirectionalLight(0xfff0cf, 4.3);
+  scene.add(new THREE.HemisphereLight(0xfffbef, 0xc9d8cf, 3.35));
+  const key = new THREE.DirectionalLight(0xffedcf, 5.15);
   key.position.set(-24, 46, 30); key.castShadow = true; key.shadow.mapSize.set(2048, 2048);
   key.shadow.camera.left = -42; key.shadow.camera.right = 42; key.shadow.camera.top = 42; key.shadow.camera.bottom = -42;
   scene.add(key);
-  const fill = new THREE.DirectionalLight(0x8ee3cb, 1.6); fill.position.set(35, 24, -26); scene.add(fill);
+  const fill = new THREE.DirectionalLight(0xc7e5d6, 2.15); fill.position.set(35, 24, -26); scene.add(fill);
 
   const timer = new THREE.Timer(); timer.connect(document);
   const raycaster = new THREE.Raycaster();
@@ -562,7 +562,7 @@ function createCampusExperience(host, initialAgent, agents, initialDepartment, i
     record.currentAction = name;
   }
   function activityAction(activity) {
-    return { running: 'typing_loop', queued: 'thinking_loop', review: 'approval_alert_loop', complete: 'celebrate_once', failed: 'approval_alert_loop', handoff: 'walk_loop', talking: 'talking_loop' }[activity] || 'idle_loop';
+    return { running: 'typing_loop', queued: 'thinking_loop', review: 'approval_alert_loop', complete: 'celebrate_once', failed: 'thinking_loop', handoff: 'walk_loop', talking: 'talking_loop' }[activity] || 'idle_loop';
   }
   function selectAgent(agentId, announce = false) {
     const record = bots.get(agentId); if (!record) return;
@@ -728,7 +728,7 @@ function createCampusExperience(host, initialAgent, agents, initialDepartment, i
   resize(); animate(); report('Loading the company campus…', 8);
 
   Promise.all([
-    loadGLTF(`${ASSET_ROOT}nyoni_company_campus_v02.glb`, (event) => event.lengthComputable && report(`Loading the company campus… ${Math.round(event.loaded / event.total * 70)}%`, event.loaded / event.total * 70)),
+    loadGLTF(`${ASSET_ROOT}nyoni_company_campus_v04.glb`, (event) => event.lengthComputable && report(`Loading the company campus… ${Math.round(event.loaded / event.total * 70)}%`, event.loaded / event.total * 70)),
     getManifest().then((manifest) => {
       botPromise ??= loadGLTF(`${ASSET_ROOT}${manifest.bot_asset.glb}`);
       return Promise.all([manifest, botPromise]);

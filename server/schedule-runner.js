@@ -33,6 +33,7 @@ export async function runDueSchedules(env = process.env) {
         title: schedule.prompt,
         agentId: schedule.agent_id,
         project: schedule.project_name,
+        workflowKind: schedule.metadata?.workflowKind,
         idempotencyKey: `schedule:${schedule.id}:${bucket}`,
       });
       await client.from('nyoni_schedules').update({
