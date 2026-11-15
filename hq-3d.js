@@ -23,6 +23,15 @@ const AGENT_IDENTITIES = {
   cutline: ['CUTLINE', 'AI Video Editor'], sonora: ['SONORA', 'Music Composer'],
   vox: ['VOX', 'Voice Director'], rally: ['RALLY', 'Campaign Producer'],
 };
+const AGENT_DEPARTMENTS = {
+  scout: ['RESEARCH', 'RD'], vault: ['RESEARCH', 'RD'],
+  creative: ['CREATIVE', 'CR'], story: ['CREATIVE', 'CR'], motion: ['CREATIVE', 'CR'],
+  pulse: ['ANALYTICS', 'DA'], hunter: ['GROWTH', 'GR'], migo: ['LEADERSHIP', 'HQ'],
+  ledger: ['FINANCE', 'FN'], margin: ['FINANCE', 'FN'], treasury: ['FINANCE', 'FN'], audit: ['FINANCE', 'FN'],
+  lumina: ['IMAGE LAB', 'IM'], reframe: ['IMAGE LAB', 'IM'],
+  nova: ['VIDEO LAB', 'VD'], kinetic: ['VIDEO LAB', 'VD'], cutline: ['VIDEO LAB', 'VD'],
+  sonora: ['AUDIO LAB', 'AU'], vox: ['AUDIO LAB', 'AU'], rally: ['CAMPAIGNS', 'CP'],
+};
 
 let activeExperience = null;
 let manifestPromise = null;
@@ -64,6 +73,7 @@ function blenderPositionToThree(position) {
 
 function prepareBotMaterials(instance, agentId, accentHex) {
   const accent = new THREE.Color(accentHex || AGENT_COLORS[agentId] || '#b8eadb');
+  const shell = new THREE.Color('#f7f3e9').lerp(accent, 0.075);
   instance.traverse((object) => {
     if (!object.isMesh) return;
     object.castShadow = true;
@@ -82,11 +92,77 @@ function prepareBotMaterials(instance, agentId, accentHex) {
         object.material.emissiveIntensity = 2.2;
       }
     }
+    if (object.material.name.includes('MAT_BOT_IVORY_SHELL')) {
+      object.material.color.copy(shell);
+      object.material.roughness = 0.28;
+      object.material.metalness = 0.04;
+    }
+    if (object.material.name.includes('MAT_BOT_JOINT')) {
+      object.material.color.set('#29332f');
+      object.material.roughness = 0.38;
+    }
   });
+}
+
+function createAgentVisualKit(agentId, accentHex) {
+  const accent = new THREE.Color(accentHex || AGENT_COLORS[agentId] || '#b8eadb');
+  const group = new THREE.Group();
+  group.name = `VISUAL_KIT_${agentId.toUpperCase()}`;
+
+  const baseMaterial = new THREE.MeshStandardMaterial({
+    color: accent, emissive: accent, emissiveIntensity: 0.55,
+    transparent: true, opacity: 0.24, roughness: 0.24, metalness: 0.08,
+  });
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.59, 0.07, 32), baseMaterial);
+  base.name = `STATUS_BASE_${agentId.toUpperCase()}`;
+  base.position.y = 0.045;
+  base.receiveShadow = true;
+  group.add(base);
+
+  const ringMaterial = new THREE.MeshBasicMaterial({
+    color: accent, transparent: true, opacity: 0.7, depthWrite: false,
+  });
+  const statusHalo = new THREE.Mesh(new THREE.TorusGeometry(0.61, 0.025, 10, 48), ringMaterial);
+  statusHalo.name = `STATUS_HALO_${agentId.toUpperCase()}`;
+  statusHalo.rotation.x = -Math.PI / 2;
+  statusHalo.position.y = 0.09;
+  group.add(statusHalo);
+
+  const trimMaterial = new THREE.MeshStandardMaterial({
+    color: accent, emissive: accent, emissiveIntensity: 0.32, roughness: 0.25, metalness: 0.18,
+  });
+  [-1, 1].forEach((side) => {
+    const pod = new THREE.Mesh(new THREE.SphereGeometry(0.105, 18, 12), trimMaterial);
+    pod.scale.set(1, 0.78, 0.82);
+    pod.position.set(side * 0.315, 0.78, 0);
+    group.add(pod);
+  });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const context = canvas.getContext('2d');
+  const [, code = 'NY'] = AGENT_DEPARTMENTS[agentId] || ['NYONI', 'NY'];
+  context.shadowColor = 'rgba(27,38,33,.28)';
+  context.shadowBlur = 18;
+  context.fillStyle = 'rgba(255,252,246,.98)';
+  context.beginPath(); context.arc(128, 128, 92, 0, Math.PI * 2); context.fill();
+  context.shadowBlur = 0;
+  context.lineWidth = 12; context.strokeStyle = accentHex || AGENT_COLORS[agentId] || '#b8eadb'; context.stroke();
+  context.fillStyle = '#1e2b25'; context.font = '900 72px Inter, Arial, sans-serif';
+  context.textAlign = 'center'; context.textBaseline = 'middle'; context.fillText(code, 128, 132);
+  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace; texture.minFilter = THREE.LinearFilter;
+  const crest = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false }));
+  crest.name = `DEPARTMENT_CREST_${agentId.toUpperCase()}`;
+  crest.position.set(0, 0.72, 0.34); crest.scale.set(0.42, 0.42, 1); crest.renderOrder = 24;
+  group.add(crest);
+
+  return { group, base, statusHalo };
 }
 
 function createNameBanner(agentId, accentHex) {
   const [name, role] = AGENT_IDENTITIES[agentId] || [agentId.toUpperCase(), 'Nyoni Agent'];
+  const [department] = AGENT_DEPARTMENTS[agentId] || ['NYONI STUDIO'];
   const canvas = document.createElement('canvas');
   canvas.width = 768;
   canvas.height = 184;
@@ -108,11 +184,14 @@ function createNameBanner(agentId, accentHex) {
   context.roundRect(34, 42, 12, 94, 6);
   context.fill();
   context.fillStyle = '#18231f';
-  context.font = '800 48px Inter, Arial, sans-serif';
-  context.fillText(name, 72, 82);
+  context.font = '850 48px Inter, Arial, sans-serif';
+  context.fillText(name, 72, 76);
+  context.fillStyle = accent;
+  context.font = '800 18px Inter, Arial, sans-serif';
+  context.fillText(department, 72, 106);
   context.fillStyle = '#65736c';
-  context.font = '600 25px Inter, Arial, sans-serif';
-  context.fillText(role.toUpperCase(), 72, 126);
+  context.font = '650 22px Inter, Arial, sans-serif';
+  context.fillText(role.toUpperCase(), 72, 136);
   context.fillStyle = accent;
   context.beginPath();
   context.arc(700, 88, 12, 0, Math.PI * 2);
@@ -131,8 +210,8 @@ function createNameBanner(agentId, accentHex) {
   const sprite = new THREE.Sprite(material);
   sprite.name = `NAME_BANNER_${agentId.toUpperCase()}`;
   sprite.userData.agentId = agentId;
-  sprite.position.set(0, 2.02, 0);
-  sprite.scale.set(3.35, 0.8, 1);
+  sprite.position.set(0, 2.1, 0);
+  sprite.scale.set(3.2, 0.77, 1);
   sprite.renderOrder = 30;
   return sprite;
 }
@@ -289,7 +368,7 @@ function createExperience(host, floorSlug, initialAgent, agentIds = []) {
     selectedAgent = agentId;
     bots.forEach((bot, id) => {
       if (bot.nameBanner?.material) bot.nameBanner.material.opacity = id === agentId ? 1 : 0.82;
-      if (bot.nameBanner) bot.nameBanner.scale.set(id === agentId ? 3.62 : 3.35, id === agentId ? 0.86 : 0.8, 1);
+      if (bot.nameBanner) bot.nameBanner.scale.set(id === agentId ? 3.55 : 3.2, id === agentId ? 0.85 : 0.77, 1);
     });
     if (record.activity !== 'running') setAction(record, 'talking_loop');
     selectRing.visible = true;
@@ -413,13 +492,19 @@ function createExperience(host, floorSlug, initialAgent, agentIds = []) {
         container.position.copy(position);
         container.rotation.y = -(data.rotation[2] - scoutRotation);
 
+        const visual = new THREE.Group();
+        visual.name = `BOT_VISUAL_${agentId.toUpperCase()}`;
+        visual.scale.setScalar(1.16);
         const instance = cloneSkinned(botGLTF.scene);
         instance.position.copy(scoutPosition).multiplyScalar(-1);
         prepareBotMaterials(instance, agentId, data.accent);
         instance.traverse((object) => {
           if (object.isMesh) pickables.push(object);
         });
-        container.add(instance);
+        visual.add(instance);
+        const visualKit = createAgentVisualKit(agentId, data.accent);
+        visual.add(visualKit.group);
+        container.add(visual);
         const hitTarget = new THREE.Mesh(
           new THREE.SphereGeometry(0.82, 12, 8),
           new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
@@ -441,7 +526,7 @@ function createExperience(host, floorSlug, initialAgent, agentIds = []) {
         mixers.push(mixer);
         bots.set(agentId, {
           container, instance, mixer, actions, currentAction: 'idle_loop', position,
-          activity: 'idle', nameBanner,
+          activity: 'idle', nameBanner, visualKit,
           accent: data.accent || AGENT_COLORS[agentId] || '#b8eadb',
         });
       });
@@ -498,7 +583,7 @@ function createCampusExperience(host, initialAgent, agents, initialDepartment, i
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.36;
+  renderer.toneMappingExposure = 1.08;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
 
@@ -514,12 +599,12 @@ function createCampusExperience(host, initialAgent, agents, initialDepartment, i
   controls.autoRotate = false;
   camera.lookAt(controls.target);
 
-  scene.add(new THREE.HemisphereLight(0xfffbef, 0xc9d8cf, 3.35));
-  const key = new THREE.DirectionalLight(0xffedcf, 5.15);
+  scene.add(new THREE.HemisphereLight(0xfffbef, 0xb7c9bf, 2.4));
+  const key = new THREE.DirectionalLight(0xffedcf, 3.65);
   key.position.set(-24, 46, 30); key.castShadow = true; key.shadow.mapSize.set(2048, 2048);
   key.shadow.camera.left = -42; key.shadow.camera.right = 42; key.shadow.camera.top = 42; key.shadow.camera.bottom = -42;
   scene.add(key);
-  const fill = new THREE.DirectionalLight(0xc7e5d6, 2.15); fill.position.set(35, 24, -26); scene.add(fill);
+  const fill = new THREE.DirectionalLight(0xc7e5d6, 1.2); fill.position.set(35, 24, -26); scene.add(fill);
 
   const timer = new THREE.Timer(); timer.connect(document);
   const raycaster = new THREE.Raycaster();
@@ -568,7 +653,8 @@ function createCampusExperience(host, initialAgent, agents, initialDepartment, i
     const record = bots.get(agentId); if (!record) return;
     selectedAgent = agentId;
     bots.forEach((bot, id) => {
-      if (bot.nameBanner?.material) bot.nameBanner.material.opacity = id === agentId ? 1 : .68;
+      if (bot.nameBanner?.material) bot.nameBanner.material.opacity = id === agentId ? 1 : .84;
+      if (bot.nameBanner) bot.nameBanner.scale.set(id === agentId ? 3.55 : 3.2, id === agentId ? .85 : .77, 1);
     });
     selectRing.visible = true; selectRing.position.copy(record.container.position).setY(.08); selectRing.material.color.set(record.accent);
     if (announce) { focusAgent(agentId); window.dispatchEvent(new CustomEvent('nyoni-agent-select', { detail: { id: agentId } })); }
@@ -576,6 +662,13 @@ function createCampusExperience(host, initialAgent, agents, initialDepartment, i
   function setAgentActivity(agentId, activity = 'idle', detail = '') {
     const record = bots.get(agentId); if (!record) return;
     record.baseActivity = { activity, detail };
+    if (record.visualKit?.statusHalo?.material) {
+      record.visualKit.statusHalo.material.opacity = ['running', 'handoff', 'review'].includes(activity) ? .95 : activity === 'complete' ? .78 : .48;
+    }
+    if (record.visualKit?.base?.material) {
+      record.visualKit.base.material.opacity = ['running', 'handoff'].includes(activity) ? .46 : .24;
+      record.visualKit.base.material.emissiveIntensity = ['running', 'handoff'].includes(activity) ? 1.2 : .55;
+    }
     if (!record.movement) setAction(record, activityAction(activity));
     updateWorkBubble(record.workBubble, activity, detail);
     record.workBubble.visible = !['idle', 'available'].includes(activity);
@@ -699,7 +792,14 @@ function createCampusExperience(host, initialAgent, agents, initialDepartment, i
   function onPointerMove(event) { if (ready) canvas.classList.toggle('is-hovering-agent', Boolean(raycast(event))); }
   function animate(timestamp) {
     if (disposed) return; frameId = requestAnimationFrame(animate); timer.update(timestamp); const delta = Math.min(timer.getDelta(), .05);
-    mixers.forEach((mixer) => mixer.update(delta)); bots.forEach((record) => updateMovement(record, delta));
+    mixers.forEach((mixer) => mixer.update(delta)); bots.forEach((record) => {
+      updateMovement(record, delta);
+      if (record.visualKit?.statusHalo) {
+        const active = ['running', 'handoff', 'review'].includes(record.baseActivity?.activity);
+        const pulse = active ? 1 + Math.sin(performance.now() * .006 + record.pulseOffset) * .09 : 1;
+        record.visualKit.statusHalo.scale.setScalar(pulse);
+      }
+    });
     if (activeHandoff) {
       if (activeHandoff.phase === 'meeting') activeHandoff.packet.position.copy(activeHandoff.from.container.position).add(new THREE.Vector3(0, 1.4, 0));
       else if (activeHandoff.phase === 'transfer') {
@@ -749,16 +849,18 @@ function createCampusExperience(host, initialAgent, agents, initialDepartment, i
       if (!station) return;
       const home = station.getWorldPosition(new THREE.Vector3());
       const container = new THREE.Group(); container.name = `WEB_AGENT_${agent.id.toUpperCase()}`; container.position.copy(home); container.rotation.y = Math.PI;
-      const instance = cloneSkinned(botGLTF.scene); instance.position.copy(scoutPosition).multiplyScalar(-1); prepareBotMaterials(instance, agent.id, agent.accent); container.add(instance);
+      const visual = new THREE.Group(); visual.name = `BOT_VISUAL_${agent.id.toUpperCase()}`; visual.scale.setScalar(1.24);
+      const instance = cloneSkinned(botGLTF.scene); instance.position.copy(scoutPosition).multiplyScalar(-1); prepareBotMaterials(instance, agent.id, agent.accent); visual.add(instance);
+      const visualKit = createAgentVisualKit(agent.id, agent.accent); visual.add(visualKit.group); container.add(visual);
       instance.traverse((object) => { if (object.isMesh) pickables.push(object); });
       const hit = new THREE.Mesh(new THREE.SphereGeometry(.84, 12, 8), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }));
       hit.position.set(0,.84,0); hit.userData.agentId = agent.id; container.add(hit); pickables.push(hit);
-      const banner = createNameBanner(agent.id, agent.accent); banner.scale.multiplyScalar(.98); banner.position.y = 2.3; container.add(banner); pickables.push(banner);
+      const banner = createNameBanner(agent.id, agent.accent); banner.position.y = 2.42; container.add(banner); pickables.push(banner);
       const bubble = createWorkBubble(agent.id, agent.accent); bubble.visible = false; container.add(bubble);
       scene.add(container);
       const mixer = new THREE.AnimationMixer(instance), actions = Object.fromEntries(botGLTF.animations.map((clip) => [clip.name, mixer.clipAction(clip)]));
       actions.idle_loop?.play(); if (actions.idle_loop) actions.idle_loop.time = index * .19; mixers.push(mixer);
-      bots.set(agent.id, { id: agent.id, container, instance, mixer, actions, currentAction: 'idle_loop', home: home.clone(), homeRotation: Math.PI, accent: agent.accent, nameBanner: banner, workBubble: bubble, baseActivity: { activity: 'idle', detail: '' }, movement: null });
+      bots.set(agent.id, { id: agent.id, container, instance, mixer, actions, currentAction: 'idle_loop', home: home.clone(), homeRotation: Math.PI, accent: agent.accent, nameBanner: banner, workBubble: bubble, visualKit, pulseOffset: index * .7, baseActivity: { activity: 'idle', detail: '' }, movement: null });
     });
     ready = true; selectAgent(selectedAgent, false); updateLiveData(pendingLiveData); host.classList.add('is-ready');
     if (initialDepartment) focusDepartment(initialDepartment); else resetCamera();
