@@ -828,7 +828,7 @@ function createCampusExperience(host, initialAgent, agents, initialDepartment, i
   resize(); animate(); report('Loading the company campus…', 8);
 
   Promise.all([
-    loadGLTF(`${ASSET_ROOT}nyoni_company_campus_v04.glb`, (event) => event.lengthComputable && report(`Loading the company campus… ${Math.round(event.loaded / event.total * 70)}%`, event.loaded / event.total * 70)),
+    loadGLTF(`${ASSET_ROOT}nyoni_company_campus_v05.glb`, (event) => event.lengthComputable && report(`Loading the company campus… ${Math.round(event.loaded / event.total * 70)}%`, event.loaded / event.total * 70)),
     getManifest().then((manifest) => {
       botPromise ??= loadGLTF(`${ASSET_ROOT}${manifest.bot_asset.glb}`);
       return Promise.all([manifest, botPromise]);

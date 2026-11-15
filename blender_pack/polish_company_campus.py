@@ -4,9 +4,9 @@ import bpy
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BLEND_OUT = ROOT / "blender_output" / "NYONI_HQ_Company_Campus_v04.blend"
-GLB_OUT = ROOT / "assets" / "3d" / "nyoni_company_campus_v04.glb"
-POSTER_OUT = ROOT / "assets" / "3d" / "company_campus_isometric_v04.png"
+BLEND_OUT = ROOT / "blender_output" / "NYONI_HQ_Company_Campus_v05.blend"
+GLB_OUT = ROOT / "assets" / "3d" / "nyoni_company_campus_v05.glb"
+POSTER_OUT = ROOT / "assets" / "3d" / "company_campus_isometric_v05.png"
 
 
 def principled(material):
@@ -71,7 +71,7 @@ plant_light = tune("MAT_POLISH_PLANT_LIGHT", (0.30, 0.55, 0.24), 0.70)
 pot = tune("MAT_POLISH_POT", (0.74, 0.67, 0.56), 0.68)
 glow = tune("MAT_POLISH_GLOW", (0.98, 0.74, 0.40), 0.24, emission=(1.0, 0.62, 0.28), emission_strength=3.5)
 
-collection = bpy.data.collections.get("POLISH_V04") or bpy.data.collections.new("POLISH_V04")
+collection = bpy.data.collections.get("POLISH_V05") or bpy.data.collections.new("POLISH_V05")
 if collection.name not in bpy.context.scene.collection.children:
     bpy.context.scene.collection.children.link(collection)
 
@@ -141,6 +141,11 @@ for planter_index, (px, py, planter_scale) in enumerate(planters):
 delete_object_tree("DESK_MIGO")
 for angle in (0, 60, 120, 180, 240, 300):
     delete_object_tree(f"MISSION_CONSOLE_{angle}")
+
+# Remove the two inherited center-lounge couches. They blocked the clean
+# circulation path and looked like stray furniture between departments.
+for lounge_name in ("LOUNGE_-8", "LOUNGE_BACK_-8", "LOUNGE_8", "LOUNGE_BACK_8"):
+    delete_object_tree(lounge_name)
 for name in ("STATION_MIGO", "PREVIEW_MIGO"):
     station = bpy.data.objects.get(name)
     if station:
@@ -212,7 +217,7 @@ bpy.ops.wm.save_as_mainfile(filepath=str(BLEND_OUT))
 
 for obj in bpy.context.scene.objects:
     obj.select_set(False)
-export_collections = {"HQ_ARCHITECTURE", "HQ_FURNITURE", "HQ_LABELS", "HQ_NAVIGATION", "SECOND_PASS", "POLISH_V04"}
+export_collections = {"HQ_ARCHITECTURE", "HQ_FURNITURE", "HQ_LABELS", "HQ_NAVIGATION", "SECOND_PASS", "POLISH_V05"}
 for collection_name in export_collections:
     export_collection = bpy.data.collections.get(collection_name)
     if export_collection:
