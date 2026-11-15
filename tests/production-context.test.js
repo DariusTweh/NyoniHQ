@@ -46,6 +46,19 @@ test('requires explicit series mapping and never guesses the detective series fo
   assert(packet.blockers.some((item) => item.code === 'SERIES_MAPPING_REQUIRED'));
 });
 
+test('non-series commercial ignores an unrelated stale series mapping', () => {
+  const base = snapshot();
+  base.project = { ...base.project, name: 'Nyoni Commercials' };
+  base.projectContexts = [{ id: 'stale-map', context_type: 'series_mapping', metadata: { series_document_id: 'deleted-series' } }];
+  base.seriesDocuments = [];
+  const packet = resolveProductionContextFromSnapshot(base, input({
+    requiresSeries: false, episodeId: null, sceneId: null, shotId: null, characterIds: [],
+    scriptText: 'Selah puts on the jacket.', assetIds: [],
+  }));
+  assert.equal(packet.series, null);
+  assert.equal(packet.blockers.some((item) => item.code === 'SERIES_NOT_FOUND'), false);
+});
+
 test('returns structured blockers instead of fabricating missing character references', () => {
   const packet = resolveProductionContextFromSnapshot(snapshot(), input({ characterIds: ['C99'] }));
   assert(packet.blockers.some((item) => item.code === 'CHARACTER_NOT_FOUND' && item.resourceId === 'C99'));

@@ -85,7 +85,8 @@ export function resolveProductionContextFromSnapshot(snapshot, input) {
 
   const blockers = [];
   const mapping = projectContexts.find((row) => row.context_type === 'series_mapping' && row.metadata?.series_document_id);
-  const seriesId = input.seriesDocumentId || mapping?.metadata?.series_document_id || null;
+  const useMappedSeries = input.requiresSeries !== false;
+  const seriesId = input.seriesDocumentId || (useMappedSeries ? mapping?.metadata?.series_document_id : null) || null;
   if (input.seriesDocumentId && mapping?.metadata?.series_document_id && input.seriesDocumentId !== mapping.metadata.series_document_id) {
     blockers.push(blocker('SERIES_MAPPING_MISMATCH', 'The requested series is not the series explicitly mapped to this HQ project.', 'series', input.seriesDocumentId, { mappedSeriesId: mapping.metadata.series_document_id }));
   }
@@ -159,7 +160,7 @@ export async function resolveProductionContext(assignment, input = {}, { client 
   if (projectError) throw new Error(`Production project lookup failed: ${projectError.message}`);
   if (contextError) throw new Error(`Production context mapping lookup failed: ${contextError.message}`);
   const mapping = (projectContexts || []).find((row) => row.context_type === 'series_mapping');
-  const seriesId = input.seriesDocumentId || mapping?.metadata?.series_document_id || null;
+  const seriesId = input.seriesDocumentId || (input.requiresSeries !== false ? mapping?.metadata?.series_document_id : null) || null;
   const productionId = input.productionDocumentId || null;
   const documentIds = [seriesId, productionId].filter(Boolean);
   const { data: documents, error: documentsError } = documentIds.length
