@@ -1,9 +1,40 @@
 let cachedStatus = null;
 
+async function apiError(response, fallback) {
+  const body = await response.json().catch(() => ({}));
+  const requestId = response.headers.get('x-vercel-id') || response.headers.get('x-request-id');
+  const reason = body.error || body.message || body.statusMessage || fallback || `Request failed with HTTP ${response.status}`;
+  const guidance = response.status === 401 || response.status === 403
+    ? ' Check the Studio passcode in Connections.'
+    : response.status === 429
+      ? ' The service is busy or the budget limit was reached; wait a moment and retry.'
+      : response.status >= 500
+        ? ' The server or a connected provider failed; retry and check the assignment details.'
+        : '';
+  const error = new Error(`${reason}${guidance}`);
+  error.status = response.status;
+  error.requestId = requestId;
+  error.code = body.code || 'API_REQUEST_FAILED';
+  return error;
+}
+
+async function request(url, options, fallback) {
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch (cause) {
+    const error = new Error('Nyoni HQ could not reach the server. Check your connection and retry.');
+    error.code = 'NETWORK_UNAVAILABLE';
+    error.cause = cause;
+    throw error;
+  }
+  if (!response.ok) throw await apiError(response, fallback);
+  return response;
+}
+
 export async function getAgentRuntimeStatus({ refresh = false } = {}) {
   if (cachedStatus && !refresh) return cachedStatus;
-  const response = await fetch('/api/agents/status', { cache: 'no-store' });
-  if (!response.ok) throw new Error(`Agent status failed with ${response.status}`);
+  const response = await request('/api/agents/status', { cache: 'no-store' }, 'Agent runtime status could not be loaded.');
   cachedStatus = await response.json();
   return cachedStatus;
 }
@@ -17,31 +48,27 @@ function studioHeaders() {
 }
 
 export async function listStudioAssignments() {
-  const response = await fetch('/api/assignments', { headers: studioHeaders(), cache: 'no-store' });
-  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `Assignment sync failed with ${response.status}`);
+  const response = await request('/api/assignments', { headers: studioHeaders(), cache: 'no-store' }, 'Assignments could not be synchronized.');
   return (await response.json()).assignments || [];
 }
 
 export async function listStudioActivity() {
-  const response = await fetch('/api/activity', { cache: 'no-store' });
-  if (!response.ok) throw new Error(`Studio activity failed with ${response.status}`);
+  const response = await request('/api/activity', { cache: 'no-store' }, 'Live studio activity could not be loaded.');
   return (await response.json()).activity || [];
 }
 
 export async function createStudioAssignment(task) {
-  const response = await fetch('/api/assignments', {
+  const response = await request('/api/assignments', {
     method: 'POST', headers: studioHeaders(),
     body: JSON.stringify({ title: task.title, agentId: task.agent, project: task.project, sourceUrl: task.sourceUrl || null }),
-  });
-  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `Assignment creation failed with ${response.status}`);
+  }, 'The assignment could not be created.');
   return (await response.json()).assignment;
 }
 
 export async function updateStudioAssignment(assignmentId, action) {
-  const response = await fetch('/api/assignments', {
+  const response = await request('/api/assignments', {
     method: 'PATCH', headers: studioHeaders(), body: JSON.stringify({ assignmentId, action }),
-  });
-  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `Assignment action failed with ${response.status}`);
+  }, `The assignment could not be ${action}d.`);
   return (await response.json()).assignment;
 }
 
@@ -56,7 +83,7 @@ export function hasStudioPasscode() {
 }
 
 export async function runCodexAssignment(task, onUpdate = () => {}) {
-  const response = await fetch('/api/agents/run', {
+  const response = await request('/api/agents/run', {
     method: 'POST',
     headers: {
       ...studioHeaders(),
@@ -66,11 +93,7 @@ export async function runCodexAssignment(task, onUpdate = () => {}) {
       title: task.title,
       project: task.project,
     }),
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.error || `Agent request failed with ${response.status}`);
-  }
+  }, 'The agent could not start.');
   if (!response.body) throw new Error('The agent stream was unavailable.');
 
   const reader = response.body.getReader();

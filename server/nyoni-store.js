@@ -79,7 +79,7 @@ export async function listAssignments(env = process.env) {
 export async function listPublicActivity(env = process.env) {
   const { client, ownerId } = await studioOwner(env);
   const { data, error } = await client.from('nyoni_assignments')
-    .select('id,agent_id,status,updated_at,nyoni_workflow_steps(title,status,position)')
+    .select('id,title,agent_id,status,updated_at,nyoni_workflow_steps(agent_id,title,status,position),nyoni_handoffs(id,assignment_id,from_agent_id,to_agent_id,status,context,created_at,accepted_at)')
     .eq('owner_id', ownerId).in('status', ['queued', 'running', 'waiting_approval', 'failed'])
     .order('updated_at', { ascending: false }).limit(20);
   if (error) throw new Error(`Studio activity lookup failed: ${error.message}`);
@@ -88,10 +88,13 @@ export async function listPublicActivity(env = process.env) {
     const current = steps.find((step) => step.status === 'running') || steps.at(-1);
     return {
       id: row.id,
+      title: row.title,
       agentId: row.agent_id,
       status: row.status,
       updatedAt: row.updated_at,
       phase: current?.title || (row.status === 'queued' ? 'Waiting for its durable workflow' : row.status === 'waiting_approval' ? 'Deliverable ready for founder review' : 'Studio mission in progress'),
+      steps,
+      handoffs: row.nyoni_handoffs || [],
     };
   });
 }

@@ -226,6 +226,7 @@ async function runCarouselProduction(assignment, plan) {
   'use step';
   const client = studioClient();
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  await recordHandoff(assignment, 'migo-to-scout-carousel', 'migo', 'scout', { brief: assignment.title, plan });
   await writeStep(assignment, { key: 'source-retrieval', position: 3, agentId: 'scout', title: 'Scout retrieves source context', status: 'running', input: { sourceUrl: assignment.source_url } });
   const sourceResponse = await fetch(assignment.source_url, { headers: { 'User-Agent': 'NyoniHQ/1.0 (+https://nyoni-hq.vercel.app)' }, signal: AbortSignal.timeout(20000) });
   if (!sourceResponse.ok) throw new Error(`Source retrieval failed with HTTP ${sourceResponse.status}.`);
@@ -234,6 +235,7 @@ async function runCarouselProduction(assignment, plan) {
   if (sourceText.length < 100) throw new Error('The source URL did not return enough readable context.');
   await writeStep(assignment, { key: 'source-retrieval', position: 3, agentId: 'scout', title: 'Scout retrieves source context', status: 'done', output: { sourceUrl: assignment.source_url, excerpt: sourceText.slice(0, 1200), characters: sourceText.length } });
 
+  await recordHandoff(assignment, 'scout-to-creative-carousel', 'scout', 'creative', { sourceUrl: assignment.source_url, sourceCharacters: sourceText.length });
   await writeStep(assignment, { key: 'carousel-creative', position: 4, agentId: 'creative', title: 'Creative develops carousel narrative', status: 'running', input: { plan, sourceUrl: assignment.source_url } });
   const creative = await runNyoniAgent({
     agentId: 'creative', project: assignment.projectName,
@@ -276,6 +278,7 @@ async function runCarouselProduction(assignment, plan) {
   }
   await writeStep(assignment, { key: 'image-generation', position: 5, agentId: 'creative', title: 'Creative generates six carousel images', status: 'done', output: { images, model, totalCostUsd: totalCost } });
 
+  await recordHandoff(assignment, 'creative-to-pulse-carousel', 'creative', 'pulse', { images: images.map((image) => image.url), creative: creative.output });
   await writeStep(assignment, { key: 'pulse-qa', position: 6, agentId: 'pulse', title: 'Pulse performs visual QA', status: 'running', input: { images: images.map((image) => image.url) } });
   const qa = await openai.responses.create({
     model: process.env.NYONI_QA_MODEL || 'gpt-5.5',
@@ -286,6 +289,7 @@ async function runCarouselProduction(assignment, plan) {
   });
   const qaText = qa.output_text || 'QA completed without a text report.';
   await writeStep(assignment, { key: 'pulse-qa', position: 6, agentId: 'pulse', title: 'Pulse performs visual QA', status: 'done', output: { report: qaText, images: images.length } });
+  await recordHandoff(assignment, 'pulse-to-migo-carousel-report', 'pulse', 'migo', { report: qaText, images: images.length });
   return { output: creative.output, plan, images, qa: qaText, sourceUrl: assignment.source_url, totalCostUsd: totalCost, agentId: 'creative', providers: { codex: true, image: model } };
 }
 
@@ -355,14 +359,18 @@ export async function runNyoniAssignmentWorkflow(assignmentId) {
       const production = await runCommercialImage(assignment, direction);
       const qa = await runCommercialQa(assignment, direction, production);
       const assembly = await runCommercialAssembly(assignment, plan, research, direction, production, qa);
+      await recordHandoff(assignment, 'rally-to-migo-final-report', 'rally', 'migo', { report: assembly.output, media: production.media });
       return await finalizeCommercial(assignment, { plan, research, direction, production, qa, assembly });
     }
     if (assignment.workflow_kind === 'carousel') {
       const carousel = await runCarouselProduction(assignment, plan);
       return await finalizeCarousel(assignment, carousel);
     }
+    const specialistId = assignment.agent_id === 'migo' ? 'creative' : assignment.agent_id;
+    await recordHandoff(assignment, `migo-to-${specialistId}`, 'migo', specialistId, { brief: assignment.title, plan });
     const deliverable = await runSpecialistStep(assignment, plan);
     const production = isMediaAgent(assignment.agent_id) ? await runMediaProduction(assignment, deliverable) : null;
+    await recordHandoff(assignment, `${specialistId}-to-migo-report`, specialistId, 'migo', { report: deliverable.output, media: production?.media || [] });
     return await finalizeAssignment(assignment, plan, deliverable, production);
   } catch (error) {
     await markFailed(assignmentId, error?.message || 'Workflow failed.');

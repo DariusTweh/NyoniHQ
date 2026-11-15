@@ -36,11 +36,14 @@ const FLOORS = [
   {name:'Audio Department',slug:'mission_control',poster:'mission_control_isometric.png',label:'AUDIO DEPARTMENT',code:'10',color:'#f0cc72',desc:'Music composition · Voice direction · Audio generation',bots:['sonora','vox']},
   {name:'Campaign Studio',slug:'commercials',poster:'commercials_poster.png',label:'CAMPAIGN STUDIO',code:'11',color:'#f19db8',desc:'Campaign production · Creative systems · Performance',bots:['rally','creative','pulse']}
 ];
+const CAMPUS_ZONE_BY_FLOOR=['COMMERCIALS','STORY','STORY','RESEARCH','RESEARCH','MISSION CONTROL','FINANCE','PHOTO','VIDEO','AUDIO','CAMPAIGN'];
 const SEED_TASKS=[];
 const KEY='nyoni-hq-v01';
 const blankState=()=>({page:'hq',floor:0,agent:'scout',task:null,tasks:[],ideas:[],events:[]});
 let state=blankState();
 let runtime={loading:true,codex:false,muse:false,studio:false,eve:true,protected:true,codexModel:'gpt-6-luna',reasoningEffort:'low',premiumModelsLocked:true,museModel:'muse-spark-1.3',stripe:false,elevenLabs:false,kie:false,waveSpeed:false};
+let systemIssue=null;
+let pendingAssignment=null;
 try {const saved=JSON.parse(localStorage.getItem(KEY)); if(saved && Array.isArray(saved.tasks)&&Array.isArray(saved.ideas)){state={...state,...saved,page:'hq'};}}catch{}
 state.tasks=state.tasks.filter(t=>!t.sample);
 state.ideas=state.ideas.filter(i=>!i.sample);
@@ -52,20 +55,32 @@ const task=id=>state.tasks.find(t=>t.id===id);
 const now=()=>new Date().toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
 function store(){try{localStorage.setItem(KEY,JSON.stringify({floor:state.floor,agent:state.agent,tasks:state.tasks,ideas:state.ideas,events:state.events}));}catch{}}
 function log(message){state.events.unshift({message,time:now()});state.events=state.events.slice(0,15);store();}
+function errorMessage(error,fallback='Something went wrong.'){
+ const message=String(error?.message||fallback).trim();
+ return message==='Failed to fetch'?'Nyoni HQ could not reach the server. Check your connection and retry.':message;
+}
+function issueMarkup(){
+ if(!systemIssue)return '';
+ return `<div class="system-issue" role="alert"><span class="system-issue-icon">!</span><span><b>${safe(systemIssue.title)}</b><small>${safe(systemIssue.message)}</small></span><button type="button" id="retry-system">Retry</button><button type="button" id="dismiss-system" aria-label="Dismiss error">×</button></div>`;
+}
+function updateIssueChrome(){const existing=$('.system-issue');if(existing)existing.remove();if(!systemIssue)return;const home=$('.command-home');if(home)home.insertAdjacentHTML('afterbegin',issueMarkup())}
+function reportIssue(scope,title,error){const message=errorMessage(error),repeat=systemIssue?.scope===scope&&systemIssue?.message===message;systemIssue={scope,title,message,time:Date.now()};updateIssueChrome();if(!repeat)toast(`${title}: ${message}`,'error')}
+function clearIssue(scope){if(systemIssue?.scope===scope){systemIssue=null;updateIssueChrome()}}
 const statuses={queued:'Queued',running:'Working live',review:'Needs approval',waiting_approval:'Needs approval',approved:'Approved',done:'Completed',rejected:'Changes requested',failed:'Run failed',cancelled:'Cancelled'};
 
 function remoteTask(row){
  const status={waiting_approval:'review',cancelled:'failed'}[row.status]||row.status;
  const version=row.nyoni_artifacts?.[0]?.nyoni_artifact_versions?.[0]?.content;
+ const steps=(row.nyoni_workflow_steps||[]).map(step=>status==='done'&&step.status!=='done'?{...step,status:'done'}:status==='failed'&&step.status==='running'?{...step,status:'failed'}:step);
  return {id:row.id,title:row.title,agent:row.agent_id,project:row.projects?.name||row.request?.project||'Nyoni Studios',status,
   created:new Date(row.created_at).toLocaleString(),output:row.result?.deliverable||version?.deliverable||'',media:row.result?.media||version?.media||[],providers:row.result?.providers||{},error:row.error||'',remote:true,
-  workflowRunId:row.workflow_run_id,steps:row.nyoni_workflow_steps||[],handoffs:row.nyoni_handoffs||[],blockers:row.result?.blockers||[]};
+  workflowRunId:row.workflow_run_id,steps,handoffs:row.nyoni_handoffs||[],blockers:row.result?.blockers||[]};
 }
 
 function activityTask(row){
  const status={waiting_approval:'review',cancelled:'failed'}[row.status]||row.status;
- return {id:`activity-${row.id}`,title:row.phase||'Studio mission in progress',agent:row.agentId,project:'Nyoni Studios',status,
-  created:new Date(row.updatedAt).toLocaleString(),output:'',error:'',activityOnly:true,remote:false,steps:[]};
+ return {id:`activity-${row.id}`,assignmentId:row.id,title:row.title||row.phase||'Studio mission in progress',phase:row.phase||'',agent:row.agentId,project:'Nyoni Studios',status,
+  created:new Date(row.updatedAt).toLocaleString(),output:'',error:'',activityOnly:true,remote:false,steps:row.steps||[],handoffs:row.handoffs||[]};
 }
 
 async function syncRemoteAssignments({quiet=true}={}){
@@ -73,11 +88,14 @@ async function syncRemoteAssignments({quiet=true}={}){
  try{
   const authenticated=hasStudioPasscode();
   const rows=authenticated?await listStudioAssignments():await listStudioActivity();
-  const remote=rows.map(authenticated?remoteTask:activityTask),locals=state.tasks.filter(t=>!t.remote&&!t.activityOnly);
+  const remote=rows.map(authenticated?remoteTask:activityTask),locals=state.tasks.filter(t=>!t.remote&&!t.activityOnly&&!runtime.studio);
   state.tasks=[...remote,...locals];
   if(state.task&&!state.tasks.some(t=>t.id===state.task))state.task=null;
-  store();render();
- }catch(error){if(!quiet)toast(error.message);console.warn('Assignment sync unavailable',error)}
+  store();
+  clearIssue('sync');
+  if(quiet&&state.page==='hq')refreshHQLive();
+  else render();
+ }catch(error){reportIssue('sync','Live activity is unavailable',error);console.warn('Assignment sync unavailable',error)}
 }
 function runtimeLabel(){
  if(runtime.loading)return 'CHECKING';
@@ -194,25 +212,29 @@ function renderHQLegacy(){const floor=FLOORS[state.floor],selected=agent(state.a
   <div class="world-help">CLICK A BOT <span>·</span> SWITCH FLOORS <span>·</span> BUILD THE MISSION</div>
  </section>`}
 function agentWork(agentId,projectName=''){
- const active=state.tasks.find(t=>t.agent===agentId&&(!projectName||t.project===projectName)&&['running','queued','review','failed'].includes(t.status));
+ const active=state.tasks.find(t=>(t.agent===agentId||(t.steps||[]).some(step=>step.agent_id===agentId&&['running','queued','waiting_approval','failed'].includes(step.status)))&&(!projectName||t.project===projectName)&&['running','queued','review','failed'].includes(t.status));
  if(!active)return {status:'idle',label:'Available',detail:'Ready for a mission',task:null,progress:0};
+ const agentStep=(active.steps||[]).find(step=>step.agent_id===agentId&&['running','queued','waiting_approval','failed'].includes(step.status));
  const done=active.steps?.filter(step=>step.status==='done').length||0,total=active.steps?.length||0;
- const label={running:'Working',queued:'Queued',review:'Needs you',failed:'Blocked'}[active.status]||active.status;
- const detail=active.status==='running'?(active.steps?.find(step=>step.status==='running')?.title||active.runPhase||active.title):active.title;
- return {status:active.status,label,detail,task:active,progress:total?Math.round(done/total*100):active.status==='review'?100:active.status==='running'?48:8};
+ const status=active.status==='failed'?'failed':({waiting_approval:'review'}[agentStep?.status]||agentStep?.status||active.status);
+ const label={running:'Working',queued:'Queued',review:'Needs you',failed:'Blocked'}[status]||status;
+ const detail=agentStep?.title||(status==='running'?(active.steps?.find(step=>step.status==='running')?.title||active.runPhase||active.title):active.title);
+ return {status,label,detail,task:active,progress:total?Math.round(done/total*100):status==='review'?100:status==='running'?48:8};
 }
-function workBubble(a,projectName){const work=agentWork(a.id,projectName);return `<button class="work-bubble ${work.status}" data-agent-console="${a.id}" style="--agent:${a.accent}"><span class="work-orb">${a.icon}</span><span class="work-copy"><b>${safe(a.name)}</b><small>${safe(work.label)} · ${safe(work.detail)}</small><i><em style="width:${work.progress}%"></em></i></span>${work.status==='review'?'<span class="needs-you">YOU</span>':''}</button>`}
+function workBubble(a){const work=agentWork(a.id);return `<button class="work-bubble ${work.status}" data-agent-console="${a.id}" style="--agent:${a.accent}"><span class="work-orb">${a.icon}</span><span class="work-copy"><b>${safe(a.name)}</b><small>${safe(work.label)} · ${safe(work.detail)}</small><i><em style="width:${work.progress}%"></em></i></span>${work.status==='review'?'<span class="needs-you">YOU</span>':''}</button>`}
+function floorFeedMarkup(floor){const tasks=state.tasks.filter(t=>t.project===floor.name||floor.bots.includes(t.agent));return `<div class="panel-cap"><span>DEPARTMENT ACTIVITY</span><b>${tasks.length} real assignments</b></div>${tasks.slice(0,5).map(t=>`<button data-result="${safe(t.id)}"><i class="${safe(t.status)}"></i><span><b>${safe(agent(t.agent).name)}</b>${safe(t.title)}</span><small>${t.output||t.media?.length?'VIEW RESULT ↗':safe(t.blockers?.length?`${t.blockers.length} blockers`:statuses[t.status]||t.status)}</small></button>`).join('')||'<p>No recorded work in this department yet.</p>'}`}
+function latestResultMarkup(floor){const result=state.tasks.find(t=>(t.project===floor.name||floor.bots.includes(t.agent))&&(t.output||t.media?.length));if(!result)return `<div class="money-card"><span>LATEST RESULT</span><h3>Nothing delivered here yet.</h3><p>Completed agent briefs, images, video and audio will appear here automatically.</p><button data-agent-console="migo">Ask MIGO to start ↗</button></div>`;return `<div class="money-card result-card"><span>LATEST RESULT · ${safe(agent(result.agent).name)}</span><h3>${safe(result.title)}</h3><p>${safe((result.output||'Generated media ready.').slice(0,180))}${result.output?.length>180?'…':''}</p><button data-result="${safe(result.id)}">Open full result ↗</button></div>`}
 function renderHQ(){
  const floor=FLOORS[state.floor],floorAgents=floor.bots.map(agent),floorTasks=state.tasks.filter(t=>t.project===floor.name),active=floorTasks.filter(t=>['running','queued'].includes(t.status)).length,review=floorTasks.filter(t=>t.status==='review').length;
- const stageMarkup=`<div class="stage-model stage-model-webgl" id="hq-3d-stage"><img class="stage-poster" src="./assets/3d/${floor.poster}" alt="Rendered ${safe(floor.name)} floor"/><canvas aria-label="Interactive 3D ${safe(floor.name)} room"></canvas><div class="stage-loader"><span data-3d-status>Preparing ${safe(floor.name)}…</span><i data-3d-progress></i></div><div class="three-controls"><button class="active" type="button" data-3d-action="rotate" aria-pressed="true">↻ Orbit</button><button type="button" data-3d-action="reset">⌂ Reset</button></div></div>`;
- return `<section class="command-home" style="--floor-accent:${floor.color}">
-  <header class="command-head"><div><span class="command-kicker"><i></i> NYONI HQ · LIVE STUDIO</span><h2>${safe(floor.name)}</h2><p>${safe(floor.desc)}</p></div><div class="command-head-actions"><span><b>${active}</b> working</span><span class="${review?'hot':''}"><b>${review}</b> need you</span><button id="new-task-command">＋ Assign</button></div></header>
+ const stageMarkup=`<div class="stage-model stage-model-webgl campus-model" id="hq-3d-stage"><img class="stage-poster" src="./assets/3d/company_campus_isometric_v02.png" alt="Rendered overview of the complete Nyoni company campus"/><canvas aria-label="Interactive 3D Nyoni company campus with all departments and agents"></canvas><div class="stage-loader"><span data-3d-status>Preparing the company campus…</span><i data-3d-progress></i></div><button class="handoff-hud" type="button" data-handoff-hud><span>LIVE HANDOFF</span><b>MIGO → CREATIVE</b><small>Delegating the assignment</small><i>Open assignment ↗</i></button><div class="three-controls"><button type="button" data-3d-action="campus">⌗ Company</button><button type="button" data-3d-action="zoom-in" aria-label="Zoom in">＋</button><button type="button" data-3d-action="zoom-out" aria-label="Zoom out">−</button><button class="active" type="button" data-3d-action="rotate" aria-pressed="false">↻ Orbit</button><button type="button" data-3d-action="reset">⌂ Reset</button></div></div>`;
+ return `<section class="command-home" style="--floor-accent:${floor.color}">${issueMarkup()}
+  <header class="command-head"><div><span class="command-kicker"><i></i> NYONI HQ · LIVE COMPANY</span><h2>${safe(floor.name)}</h2><p>${safe(floor.desc)} · one connected company campus</p></div><div class="command-head-actions"><span><b>${active}</b> working</span><span class="${review?'hot':''}"><b>${review}</b> need you</span><button id="new-task-command">＋ Assign</button></div></header>
   <nav class="floor-rail" aria-label="Project floors">${FLOORS.map((item,index)=>`<button data-floor="${index}" class="${index===state.floor?'active':''}" style="--chip:${item.color}"><i></i><span>${item.code}</span>${safe(item.name)}</button>`).join('')}</nav>
   <main class="command-grid">
-   <section class="command-stage"><div class="stage-glow"></div>${stageMarkup}<div class="stage-live"><i></i> LIVE 3D · CLICK A BOT OR WORK BUBBLE</div></section>
+   <section class="command-stage"><div class="stage-glow"></div>${stageMarkup}<div class="stage-live"><i></i> LIVE COMPANY · AGENTS MOVE AND HAND WORK OFF</div></section>
    <aside class="worker-panel"><div class="panel-cap"><span>ON THIS FLOOR</span><b>${floorAgents.length} agents</b></div><div class="worker-list">${floorAgents.map(a=>workBubble(a,floor.name)).join('')}</div><button class="talk-migo" data-agent-console="migo">✦ Ask MIGO to run the studio</button></aside>
   </main>
-  <section class="command-bottom"><div class="live-feed"><div class="panel-cap"><span>FLOOR ACTIVITY</span><b>${floorTasks.length} real assignments</b></div>${floorTasks.slice(0,4).map(t=>`<button data-task="${safe(t.id)}"><i class="${safe(t.status)}"></i><span><b>${safe(agent(t.agent).name)}</b>${safe(t.title)}</span><small>${safe(t.blockers?.length?`${t.blockers.length} blockers`:statuses[t.status]||t.status)}</small></button>`).join('')||'<p>No recorded work on this floor yet.</p>'}</div><div class="money-card"><span>PROJECT MEMORY</span><h3>${safe(floor.name)} stays isolated.</h3><p>Agents load this floor’s saved operating charter and project-specific sources. Cross-project canon is never treated as memory.</p><button data-agent-console="migo">Ask MIGO ↗</button></div></section>
+  <section class="command-bottom"><div class="live-feed">${floorFeedMarkup(floor)}</div>${latestResultMarkup(floor)}</section>
   <button class="mobile-assign" id="new-task-mobile">＋ New assignment</button>
  </section>`;
 }
@@ -240,8 +262,27 @@ function renderInspector(){
  const a=agent(state.agent),assigned=state.tasks.filter(t=>t.agent===a.id),live=agentIsLive(a);
  return `<div class="inspector-heading">AGENT INSPECTOR</div><div class="inspector-agent-card" style="--agent:${a.accent}"><div class="inspector-name-banner"><b>${safe(a.name)}</b><small>${safe(a.role)}</small></div><div class="inspector-portrait">${botPortrait(a)}</div><div class="agent-status-line"><span style="background:${live?'#8be6c8':'#e1b987'}"></span> ${live?'Available':'Ready to connect'} · ${safe(providerLabel(a))}</div></div><div class="inspector-section"><div class="tiny-heading">WHAT THIS AGENT DOES</div><p style="color:#9ab0bc;font-size:11px;line-height:1.7">${safe(a.specialty)}</p></div><div class="inspector-section"><div class="tiny-heading">ASSIGNMENTS (${assigned.length})</div>${assigned.map(t=>`<div class="task-item" data-task="${safe(t.id)}"><div class="task-text"><strong>${safe(t.title)}</strong><span>${safe(statuses[t.status]||t.status)}</span></div></div>`).join('')||'<p class="inspector-note">No tasks assigned yet.</p>'}<button class="btn-outline" id="assign-selected">＋ Assign ${a.name} a task</button></div><div class="inspector-section"><div class="tiny-heading">RUNTIME</div><div class="runtime-stack"><span class="runtime-pill ${runtime.codex?'on':''}">Codex ${runtime.codex?'connected':'ready'}</span><span class="runtime-pill ${runtime.muse?'on':''}">Muse ${runtime.muse?'connected':'optional'}</span><span class="runtime-pill ${runtime.studio?'on':''}">Movie DB ${runtime.studio?'connected':'ready'}</span></div><button class="btn-ghost" id="connections-inspector" style="width:100%;margin-top:10px">Manage connections</button></div><div class="inspector-note">${runtime.codex?'This identity runs through the managed Codex harness.':'The identity and prompts are built. Add the server key to make it a real Codex session.'}</div>`;
 }
-function applyAgentActivities(){const floor=FLOORS[state.floor];floor?.bots.forEach(id=>{const status=agentWork(id,floor.name).status;window.NyoniHQ3D?.setAgentActivity?.(id,status==='review'?'review':status==='running'?'running':['approved','done'].includes(status)?'complete':'idle')})}
-function mountCurrentHQ(){if(state.page==='hq'){const floor=FLOORS[state.floor];requestAnimationFrame(()=>{window.NyoniHQ3D?.mountHQ3D({floorSlug:floor.slug,selectedAgent:state.agent,agentIds:floor.bots});setTimeout(applyAgentActivities,800)})}}
+function campusLiveData(){
+ const agents=AGENTS.map(a=>{const work=agentWork(a.id);return {id:a.id,activity:work.status==='review'?'review':work.status==='running'?'running':work.status==='queued'?'queued':work.status==='failed'?'failed':['approved','done'].includes(work.status)?'complete':'idle',detail:work.detail}});
+ const handoffs=state.tasks.flatMap(t=>(t.handoffs||[]).map(h=>({...h,assignment_id:h.assignment_id||t.assignmentId||t.id,title:t.title,task_id:t.id})));
+ return {agents,handoffs};
+}
+function applyAgentActivities(){window.NyoniHQ3D?.updateLiveData?.(campusLiveData())}
+function refreshHQLive(){
+ applyAgentActivities();
+ const floor=FLOORS[state.floor],floorAgents=floor.bots.map(agent);
+ const list=$('.worker-list');if(list)list.innerHTML=floorAgents.map(a=>workBubble(a)).join('');
+ const feed=$('.live-feed');if(feed)feed.innerHTML=floorFeedMarkup(floor);
+}
+function focusCampusFloor(index){
+ state.floor=index;state.agent=FLOORS[index].bots[0];state.task=null;store();
+ const floor=FLOORS[index],home=$('.command-home');if(home)home.style.setProperty('--floor-accent',floor.color);
+ document.querySelectorAll('.floor-rail [data-floor]').forEach(button=>button.classList.toggle('active',Number(button.dataset.floor)===index));
+ const title=$('.command-head h2'),description=$('.command-head p');if(title)title.textContent=floor.name;if(description)description.textContent=`${floor.desc} · one connected company campus`;
+ const count=$('.worker-panel .panel-cap b');if(count)count.textContent=`${floor.bots.length} agents`;
+ refreshHQLive();window.NyoniHQ3D?.focusDepartment?.(CAMPUS_ZONE_BY_FLOOR[index]);window.NyoniHQ3D?.setSelectedAgent?.(state.agent);
+}
+function mountCurrentHQ(){if(state.page==='hq'){requestAnimationFrame(()=>{window.NyoniHQ3D?.mountHQ3D({campus:true,selectedAgent:state.agent,agents:AGENTS,department:CAMPUS_ZONE_BY_FLOOR[state.floor],liveData:campusLiveData()})})}}
 function updateHQAgentCard(id){const selected=agent(id),card=$('.world-agent');if(!card)return;card.style.setProperty('--agent',selected.accent);card.innerHTML=`<div class="world-agent-portrait">${botPortrait(selected)}</div><div><span>NOW INSPECTING</span><strong>${selected.name}</strong><small>${safe(selected.role)}</small></div><button data-page="agents" aria-label="Open all agents">↗</button>`}
 function render(){
  const meta={hq:['The studio is alive','A tiny world for the big things we’re building.'],agents:['Meet the agents','Every great studio needs a great crew.'],tasks:['Assignment board','Make the work visible, one assignment at a time.'],ideas:['Where ideas begin','Save the spark before it disappears.'],outputs:['Delivered work','Review, revise, and approve in one place.']}[state.page];
@@ -258,18 +299,23 @@ function render(){
  store();
  mountCurrentHQ();
 }
-function toast(message){const el=document.createElement('div');el.className='toast';el.textContent=message;$('#toast-root').replaceChildren(el);setTimeout(()=>el.remove(),3200)}
+function toast(message,type='info'){const el=document.createElement('div');el.className=`toast ${type}`;el.textContent=message;$('#toast-root').replaceChildren(el);setTimeout(()=>el.remove(),type==='error'?7000:3200)}
 function modal(html){$('#modal-root').innerHTML=`<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true">${html}</div></div>`;$('#modal-root').querySelector('.modal-backdrop').addEventListener('click',e=>{if(e.target===e.currentTarget)closeModal()});$('#modal-root').querySelectorAll('.modal-close').forEach(el=>el.addEventListener('click',closeModal));}
 function closeModal(){$('#modal-root').innerHTML=''}
 function assignModal(prefill=''){const a=agent(state.agent);modal(`<div class="modal-top"><h2>New assignment</h2><button class="modal-close" aria-label="Close">×</button></div><div class="modal-description">Give any Nyoni agent a mission. Media specialists plan the job, call the right Nyoni Studio generator, and return the result here.</div><form id="task-form"><label class="field-label" for="task-title">WHAT NEEDS TO GET DONE?</label><textarea id="task-title" class="form-field textarea" name="title" maxlength="1000" required placeholder="Example: Create a cinematic vertical launch video for Nyoni">${safe(prefill)}</textarea><label class="field-label" for="task-agent">ASSIGN TO</label><select class="form-field" id="task-agent" name="agent">${AGENTS.map(x=>`<option value="${x.id}" ${x.id===a.id?'selected':''}>${x.name} — ${x.role} · ${providerLabel(x)}</option>`).join('')}</select><label class="field-label" for="task-project">PROJECT / DEPARTMENT</label><select class="form-field" id="task-project" name="project">${FLOORS.map(x=>`<option ${x.name===FLOORS[a.floor]?.name?'selected':''}>${x.name}</option>`).join('')}</select><label class="field-label" for="task-source">SOURCE IMAGE OR VIDEO URL · REQUIRED FOR REFRAME, KINETIC & CUTLINE</label><input class="form-field" id="task-source" name="sourceUrl" type="url" placeholder="https://…"/><div class="submit-row"><button type="button" class="modal-close">Cancel</button><button class="primary" type="submit">Start assignment</button></div></form><p class="fineprint">Bounded internal generation runs automatically. Publishing, outreach, deletion, account changes, contracts, and money movement still require approval.</p>`);$('#task-title').focus()}
 function connectionsModal(){
  modal(`<div class="modal-top"><h2>Agent connections</h2><button class="modal-close" aria-label="Close">×</button></div><p class="modal-description">Codex runs the crew, Supabase holds shared memory, and connected media providers support production work. Consequential external actions remain approval-gated.</p><div class="connection-grid"><div class="connection-card ${runtime.codex?'connected':''}"><span>PRIMARY RUNTIME</span><b>OpenAI Codex</b><small>${runtime.codex?`Connected · ${safe(runtime.codexModel)} · ${safe(runtime.reasoningEffort)} reasoning`:'Needs OPENAI_API_KEY'}</small></div><div class="connection-card ${runtime.studio?'connected':''}"><span>SHARED MEMORY</span><b>Supabase Studio DB</b><small>${runtime.studio?'Connected · durable assignments':'Needs Supabase server variables'}</small></div><div class="connection-card ${runtime.elevenLabs?'connected':''}"><span>VOICE</span><b>ElevenLabs</b><small>${runtime.elevenLabs?'Connected server-side':'Needs ELEVENLABS_API_KEY'}</small></div><div class="connection-card ${runtime.kie?'connected':''}"><span>MEDIA</span><b>KIE</b><small>${runtime.kie?'Connected server-side':'Needs KIE_API_KEY'}</small></div><div class="connection-card ${runtime.waveSpeed?'connected':''}"><span>MEDIA</span><b>WaveSpeed</b><small>${runtime.waveSpeed?'Connected server-side':'Needs WAVESPEED_API_KEY'}</small></div><div class="connection-card ${runtime.stripe?'connected':''}"><span>FINANCE · READ ONLY</span><b>Stripe</b><small>${runtime.stripe?'Restricted connection active':'Needs STRIPE_RESTRICTED_KEY'}</small></div></div><div class="info-banner"><b>Cost and autonomy guards active</b><br/>Internal research, drafting, analysis, QA, and handoffs run automatically. Publishing, outreach, account changes, contracts, deletion, and money movement require approval.</div><form id="access-form"><label class="field-label" for="studio-passcode">STUDIO PASSCODE ${hasStudioPasscode()?'· SAVED FOR THIS TAB':''}</label><input class="form-field" id="studio-passcode" name="passcode" type="password" autocomplete="current-password" placeholder="Required for protected commands and approvals"/><div class="submit-row"><button type="button" class="modal-close">Close</button><button class="primary" type="submit">Save passcode</button></div></form>`);
 }
+function resultModal(taskId){
+ const t=task(taskId);if(!t)return;
+ const a=agent(t.agent),steps=(t.steps||[]).slice().sort((x,y)=>(x.position||0)-(y.position||0));
+ modal(`<div class="result-modal" style="--agent:${a.accent}"><div class="modal-top"><div><small class="result-kicker">${safe(a.name)} · ${safe(statuses[t.status]||t.status)}</small><h2>${safe(t.title)}</h2></div><button class="modal-close" aria-label="Close">×</button></div>${t.media?.length?`<div class="deliverable-media">${mediaPreview(t)}</div>`:''}${t.output?`<div class="result-copy">${safe(t.output)}</div>`:`<div class="info-banner">${t.error?`<b>Run blocked</b><br/>${safe(t.error)}`:'This assignment is still running. Its result will appear here automatically.'}</div>`}${steps.length?`<div class="result-steps"><span>WORKFLOW</span>${steps.map(s=>`<div><i class="${safe(s.status)}"></i><b>${safe(agent(s.agent_id||t.agent).name)}</b><small>${safe(s.title)} · ${safe(statuses[s.status]||s.status)}</small></div>`).join('')}</div>`:''}<div class="submit-row"><button type="button" class="modal-close">Close</button>${t.status==='failed'?`<button type="button" class="primary" data-task="${safe(t.id)}">Open recovery ↗</button>`:''}</div></div>`);
+}
 function agentConsoleModal(agentId){
  const a=agent(agentId),assigned=state.tasks.filter(t=>t.agent===a.id).slice(0,5),floor=FLOORS.find(item=>item.bots.includes(a.id))||FLOORS[state.floor];
  state.agent=a.id;
  const needsSource=['reframe','kinetic','cutline'].includes(a.id),acceptsSource=needsSource||a.id==='rally';
- modal(`<div class="agent-console" style="--agent:${a.accent}"><div class="modal-top"><div class="console-identity"><span>${a.icon}</span><div><small>LIVE AGENT</small><h2>${safe(a.name)}</h2><p>${safe(a.role)}</p></div></div><button class="modal-close" aria-label="Close">×</button></div><p class="console-specialty">${safe(a.specialty)}</p><div class="console-work">${assigned.map(t=>`<div><i class="${safe(t.status)}"></i><span><b>${safe(statuses[t.status]||t.status)}</b>${safe(t.title)}</span>${t.status==='review'?`<button data-quick-approve="${safe(t.id)}">Approve</button>`:''}</div>`).join('')||'<p>No assignments yet. Give this agent a mission below.</p>'}</div><form id="agent-command-form"><input type="hidden" name="agent" value="${a.id}"/><input type="hidden" name="project" value="${safe(floor.name)}"/><label for="agent-command">TALK TO ${safe(a.name).toUpperCase()}</label><textarea id="agent-command" name="title" required maxlength="1000" placeholder="Tell ${safe(a.name)} what outcome you want…"></textarea>${acceptsSource?`<label for="agent-source">SOURCE ${needsSource?'REQUIRED':'OPTIONAL'}</label><input class="form-field" id="agent-source" name="sourceUrl" type="url" ${needsSource?'required':''} placeholder="Public image or video URL"/>`:''}<div class="console-submit"><span>Runs durably in the background</span><button type="submit">Start mission ↗</button></div></form></div>`);
+ modal(`<div class="agent-console" style="--agent:${a.accent}"><div class="modal-top"><div class="console-identity"><span>${a.icon}</span><div><small>LIVE AGENT</small><h2>${safe(a.name)}</h2><p>${safe(a.role)}</p></div></div><button class="modal-close" aria-label="Close">×</button></div><p class="console-specialty">${safe(a.specialty)}</p><div class="console-work">${assigned.map(t=>`<div><i class="${safe(t.status)}"></i><span><b>${safe(statuses[t.status]||t.status)}</b>${safe(t.title)}</span>${t.output||t.media?.length?`<button data-result="${safe(t.id)}">Result</button>`:t.status==='review'?`<button data-quick-approve="${safe(t.id)}">Approve</button>`:''}</div>`).join('')||'<p>No assignments yet. Give this agent a mission below.</p>'}</div><form id="agent-command-form"><input type="hidden" name="agent" value="${a.id}"/><input type="hidden" name="project" value="${safe(floor.name)}"/><label for="agent-command">TALK TO ${safe(a.name).toUpperCase()}</label><textarea id="agent-command" name="title" required maxlength="1000" placeholder="Tell ${safe(a.name)} what outcome you want…"></textarea>${acceptsSource?`<label for="agent-source">SOURCE ${needsSource?'REQUIRED':'OPTIONAL'}</label><input class="form-field" id="agent-source" name="sourceUrl" type="url" ${needsSource?'required':''} placeholder="Public image or video URL"/>`:''}<div class="console-submit"><span>Runs durably in the background</span><button type="submit">Start mission ↗</button></div></form></div>`);
  setTimeout(()=>$('#agent-command')?.focus(),0);
 }
 function previewText(t){const a=agent(t.agent),q=t.title;const formats={scout:`DEMO RESEARCH OUTLINE — ${q}\n1. Define target audience and geography.\n2. Collect evidence from trusted industry and business sources.\n3. Compare key opportunities, gaps, and risks.\n4. Prepare a cited report for MIGO review.\nNO LIVE RESEARCH WAS PERFORMED.`,creative:`DEMO CAMPAIGN DIRECTION — ${q}\nConcept: “Make the moment unforgettable.”\nVisuals: tactile cinematic close-ups, strong natural lighting, and an unexpected reveal.\nDeliverables: 3 stills, one 9:16 short video creative brief, ad caption and CTA.\nNO AI MODEL WAS CALLED.`,story:`DEMO SCRIPT PLAN — ${q}\nOpening: establish stakes through a visual action, not exposition.\nMiddle: set up a character disagreement with a specific consequence.\nClosing: reveal a new complication that motivates the next scene.\nNO AI MODEL WAS CALLED.`,hunter:`DEMO CLIENT OUTREACH PLAN — ${q}\nChoose target category and region; validate business details; review recent creative output; draft a specific, non-spammy proposal; request human approval before outreach.\nNO PROSPECTS WERE LOOKED UP OR CONTACTED.`,pulse:`DEMO ANALYTICS CHECKLIST — ${q}\nTrack publishing cadence, reach, saves, CTR, qualified inquiries, conversion rate and client retention. Separate verified source data from estimates.\nNO LIVE METRICS WERE READ.`,motion:`DEMO PRODUCTION PLAN — ${q}\nShot 1: angled establishing, 24fps, intentional asymmetry.\nShot 2: motivated camera move and facial reaction.\nShot 3: clean product or story reveal.\nProduction notes: continuity, staging, materials, lighting, physics.\nNO VIDEO WAS GENERATED.`,vault:`DEMO IDEA BRIEF — ${q}\nCore hook: one clear visual twist in the opening seconds.\nDifferentiate: lean into Nyoni's distinctive storytelling rather than copying a trend.\nTest: three concept variants, scored for feasibility and originality.\nNO AI MODEL WAS CALLED.`,migo:`DEMO MISSION BRIEF — ${q}\n1. Clarify outcome and constraints.\n2. Assign the relevant specialist.\n3. Establish review checkpoints.\n4. Require approval before publication, outreach or spend.\nNO AGENTS WERE ACTUALLY DELEGATED.`};return formats[a.id]||formats.migo}
@@ -298,43 +344,68 @@ async function previewTask(){
   window.NyoniHQ3D?.setAgentActivity?.(a.id,'idle');store();render();
  }
 }
+async function launchDurableAssignment(draft,origin='agent',button=null){
+ if(!hasStudioPasscode()){
+  pendingAssignment={draft,origin};connectionsModal();toast('Unlock once — your mission will start automatically after the passcode is verified');return;
+ }
+ if(button){button.disabled=true;button.textContent='Starting…'}
+ try{
+  const row=await createStudioAssignment(draft);clearIssue('command');pendingAssignment=null;
+  const saved=remoteTask(row);state.tasks.unshift(saved);state.agent=saved.agent;state.task=saved.id;
+  log(`Durable assignment started for ${agent(saved.agent).name}`);closeModal();render();
+  toast(`${agent(saved.agent).name} is working — the result will appear on this screen`);setTimeout(()=>syncRemoteAssignments(),2000);
+ }catch(error){
+  if(error?.status===401||error?.status===403){saveStudioPasscode('');pendingAssignment={draft,origin};connectionsModal();reportIssue('command','Studio unlock expired',error)}
+  else{if(button){button.disabled=false;button.textContent=origin==='agent'?'Start mission ↗':'Start assignment'}reportIssue('command','Assignment could not start',error)}
+ }
+}
 function nav(page){state.page=page;state.task=null;render()}
 function pickAgent(id){state.agent=id;state.task=null;render()}
 function pickTask(id){state.task=id;render()}
 document.addEventListener('click',e=>{
  const p=e.target.closest('[data-page]');if(p){nav(p.dataset.page);return;}
- const f=e.target.closest('[data-floor]');if(f){state.floor=Number(f.dataset.floor);state.agent=FLOORS[state.floor].bots[0];state.task=null;render();return;}
- const consoleButton=e.target.closest('[data-agent-console]');if(consoleButton){agentConsoleModal(consoleButton.dataset.agentConsole);return;}
- const quickApprove=e.target.closest('[data-quick-approve]');if(quickApprove){const assignmentId=quickApprove.dataset.quickApprove;void updateStudioAssignment(assignmentId,'approve').then(()=>{closeModal();return syncRemoteAssignments({quiet:false})}).catch(error=>toast(error.message));return;}
+ const f=e.target.closest('[data-floor]');if(f){if(state.page==='hq')focusCampusFloor(Number(f.dataset.floor));else{state.floor=Number(f.dataset.floor);state.agent=FLOORS[state.floor].bots[0];state.task=null;render()}return;}
+ const consoleButton=e.target.closest('[data-agent-console]');if(consoleButton){window.NyoniHQ3D?.focusAgent?.(consoleButton.dataset.agentConsole);agentConsoleModal(consoleButton.dataset.agentConsole);return;}
+ const resultButton=e.target.closest('[data-result]');if(resultButton){resultModal(resultButton.dataset.result);return;}
+ const quickApprove=e.target.closest('[data-quick-approve]');if(quickApprove){const assignmentId=quickApprove.dataset.quickApprove;void updateStudioAssignment(assignmentId,'approve').then(()=>{clearIssue('command');closeModal();return syncRemoteAssignments({quiet:false})}).catch(error=>reportIssue('command','Approval failed',error));return;}
  const b=e.target.closest('[data-agent]');if(b){pickAgent(b.dataset.agent);return;}
  const t=e.target.closest('[data-task]');if(t){pickTask(t.dataset.task);return;}
  const ia=e.target.closest('[data-idea-assign]');if(ia){const idea=state.ideas.find(i=>i.id===ia.dataset.ideaAssign);if(idea)assignModal(idea.title);return;}
  const id=e.target.closest('button')?.id;
+ if(id==='dismiss-system'){systemIssue=null;updateIssueChrome();return;}
+ if(id==='retry-system'){
+  const scope=systemIssue?.scope;systemIssue=null;updateIssueChrome();
+  if(scope==='3d'){window.NyoniHQ3D?.unmountHQ3D();mountCurrentHQ()}
+  else if(scope==='runtime')getAgentRuntimeStatus({refresh:true}).then(status=>{runtime={loading:false,...status};clearIssue('runtime');render()}).catch(error=>reportIssue('runtime','Agent runtime is unavailable',error));
+  else void syncRemoteAssignments({quiet:false});
+  return;
+ }
  if(['new-task-top','new-task-top-dock','new-task-command','new-task-mobile','add-task-inline','assign-selected'].includes(id)){assignModal();return;}
  if(['connections-btn','connections-top','connections-inline','connections-inspector'].includes(id)){connectionsModal();return;}
  if(id==='back-agent'){state.task=null;render()}
  if(id==='preview-task'){void previewTask()}
  if(id==='sync-task'){void syncRemoteAssignments({quiet:false})}
- if(id==='approve-task'){const t=task(state.task);if(t){if(t.remote){void updateStudioAssignment(t.id,'approve').then(()=>syncRemoteAssignments({quiet:false})).catch(e=>toast(e.message));}else{t.status='approved';log(`Output approved: ${t.title}`);render();toast('Approved by you')}}}
- if(id==='reject-task'){const t=task(state.task);if(t){if(t.remote){void updateStudioAssignment(t.id,'reject').then(()=>syncRemoteAssignments({quiet:false})).catch(e=>toast(e.message));}else{t.status='rejected';log(`Revision requested: ${t.title}`);render();toast('Marked for revision')}}}
- if(id==='delete-task'){const t=task(state.task);if(t&&t.status!=='running'){if(t.remote){void updateStudioAssignment(t.id,'cancel').then(()=>syncRemoteAssignments({quiet:false})).catch(e=>toast(e.message));}else{state.tasks=state.tasks.filter(x=>x.id!==t.id);state.task=null;log(`Assignment deleted: ${t.title}`);render();toast('Assignment deleted')}}}
+ if(id==='approve-task'){const t=task(state.task);if(t){if(t.remote){void updateStudioAssignment(t.id,'approve').then(()=>{clearIssue('command');return syncRemoteAssignments({quiet:false})}).catch(e=>reportIssue('command','Approval failed',e));}else{t.status='approved';log(`Output approved: ${t.title}`);render();toast('Approved by you')}}}
+ if(id==='reject-task'){const t=task(state.task);if(t){if(t.remote){void updateStudioAssignment(t.id,'reject').then(()=>{clearIssue('command');return syncRemoteAssignments({quiet:false})}).catch(e=>reportIssue('command','Revision request failed',e));}else{t.status='rejected';log(`Revision requested: ${t.title}`);render();toast('Marked for revision')}}}
+ if(id==='delete-task'){const t=task(state.task);if(t&&t.status!=='running'){if(t.remote){void updateStudioAssignment(t.id,'cancel').then(()=>{clearIssue('command');return syncRemoteAssignments({quiet:false})}).catch(e=>reportIssue('command','Cancellation failed',e));}else{state.tasks=state.tasks.filter(x=>x.id!==t.id);state.task=null;log(`Assignment deleted: ${t.title}`);render();toast('Assignment deleted')}}}
  if(id==='help-btn'){modal(`<div class="modal-top"><h2>About Nyoni HQ</h2><button class="modal-close">×</button></div><p class="modal-description">NYONI HQ is an eleven-floor 3D operating system with 20 persistent agents across creative, finance, photo, video, audio and campaign production.</p><div class="info-banner"><b>Approvals are reserved for consequential actions.</b> Internal planning and bounded media generation run automatically. Publishing, outreach, deletion, account changes, contracts, and money movement still require you.</div><p class="fineprint">Click a 3D bot or its live work bubble to see its current work, start a mission and review generated media from the front screen.</p><div class="submit-row"><button class="modal-close">Got it</button></div>`);}
 });
-window.addEventListener('nyoni-agent-select',event=>{const id=event.detail?.id;if(!id||!AGENTS.some(item=>item.id===id))return;state.agent=id;state.task=null;store();updateHQAgentCard(id)});
+window.addEventListener('nyoni-agent-select',event=>{const id=event.detail?.id;if(!id||!AGENTS.some(item=>item.id===id))return;state.agent=id;state.task=null;store();agentConsoleModal(id)});
+window.addEventListener('nyoni-handoff-select',event=>{const id=event.detail?.taskId||event.detail?.assignmentId;if(id&&task(id))resultModal(id)});
+window.addEventListener('nyoni-3d-error',event=>reportIssue('3d','Interactive campus could not load',event.detail?.message||'The rendered overview is still available.'));
+window.addEventListener('nyoni-3d-loaded',()=>clearIssue('3d'));
+window.addEventListener('offline',()=>reportIssue('network','You are offline','Live assignments and agent updates are paused until the connection returns.'));
+window.addEventListener('online',()=>{clearIssue('network');toast('Connection restored — refreshing live activity');void syncRemoteAssignments({quiet:false})});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();if((e.key==='Enter'||e.key===' ')&&e.target.matches('.bot-hit,[role="button"][data-task]')){e.preventDefault();e.target.dispatchEvent(new MouseEvent('click',{bubbles:true}))}});
 document.addEventListener('submit',e=>{
- if(e.target.id==='agent-command-form'){e.preventDefault();const form=new FormData(e.target),title=String(form.get('title')||'').trim();if(!title)return;const draft={title,agent:String(form.get('agent')),project:String(form.get('project')),sourceUrl:String(form.get('sourceUrl')||'').trim(),status:'queued',created:now(),output:'',media:[],sample:false};if(!hasStudioPasscode()){connectionsModal();toast('Save the studio passcode once to start autonomous work');return;}const button=e.target.querySelector('button[type="submit"]');button.disabled=true;button.textContent='Starting…';void createStudioAssignment(draft).then(row=>{const saved=remoteTask(row);state.tasks.unshift(saved);closeModal();render();toast(`${agent(saved.agent).name} is working`);setTimeout(()=>syncRemoteAssignments(),2000)}).catch(error=>{button.disabled=false;button.textContent='Start mission ↗';toast(error.message)});return;}
+ if(e.target.id==='agent-command-form'){e.preventDefault();const form=new FormData(e.target),title=String(form.get('title')||'').trim();if(!title)return;const draft={title,agent:String(form.get('agent')),project:String(form.get('project')),sourceUrl:String(form.get('sourceUrl')||'').trim(),status:'queued',created:now(),output:'',media:[],sample:false};void launchDurableAssignment(draft,'agent',e.target.querySelector('button[type="submit"]'));return;}
  if(e.target.id==='task-form'){e.preventDefault();const form=new FormData(e.target);const title=String(form.get('title')||'').trim();if(!title)return;const t={id:'task-'+Date.now()+'-'+Math.floor(Math.random()*1e6),title,agent:String(form.get('agent')),project:String(form.get('project')),sourceUrl:String(form.get('sourceUrl')||'').trim(),status:'queued',created:now(),output:'',sample:false};
-  if(runtime.studio&&runtime.codex){
-   if(!hasStudioPasscode()){connectionsModal();toast('Save the studio passcode once to start autonomous assignments');return;}
-   const button=e.target.querySelector('[type="submit"]');button.disabled=true;button.textContent='Starting durable run…';
-   void createStudioAssignment(t).then(row=>{const saved=remoteTask(row);state.tasks.unshift(saved);state.agent=saved.agent;state.task=saved.id;log(`Durable assignment started for ${agent(saved.agent).name}`);closeModal();render();toast('Assignment started — it will continue if you close HQ');setTimeout(()=>syncRemoteAssignments(),2500)}).catch(error=>{button.disabled=false;button.textContent='Add assignment';toast(error.message)});return;
-  }
+  if(runtime.studio&&runtime.codex){void launchDurableAssignment(t,'task',e.target.querySelector('[type="submit"]'));return;}
   state.tasks.unshift(t);state.agent=t.agent;state.task=t.id;log(`Assignment created for ${agent(t.agent).name}`);closeModal();render();toast('Assignment added to local queue')}
  if(e.target.id==='idea-form'){e.preventDefault();const input=e.target.querySelector('input');const title=input.value.trim();if(!title)return;state.ideas.unshift({id:'idea-'+Date.now(),title,description:'Ready for development.',sample:false});log('New idea saved in vault');render();toast('Idea saved locally')}
- if(e.target.id==='access-form'){e.preventDefault();const form=new FormData(e.target);saveStudioPasscode(form.get('passcode'));closeModal();toast('Studio passcode saved for this browser tab')}
+ if(e.target.id==='access-form'){e.preventDefault();const form=new FormData(e.target),button=e.target.querySelector('[type="submit"]');saveStudioPasscode(form.get('passcode'));button.disabled=true;button.textContent='Verifying…';void listStudioAssignments().then(()=>{clearIssue('command');closeModal();toast('Studio unlocked for this browser tab');void syncRemoteAssignments({quiet:false});const pending=pendingAssignment;if(pending)void launchDurableAssignment(pending.draft,pending.origin)}).catch(error=>{saveStudioPasscode('');button.disabled=false;button.textContent='Unlock studio';reportIssue('command','Passcode was not accepted',error)});return;}
 });
 $('#brand-link').addEventListener('click',e=>{e.preventDefault();nav('hq')});
 render();
-getAgentRuntimeStatus({refresh:true}).then((status)=>{runtime={loading:false,...status};render();void syncRemoteAssignments();setInterval(()=>syncRemoteAssignments(),8000);}).catch((error)=>{console.warn('Agent runtime status unavailable',error);runtime={...runtime,loading:false};updateRuntimeChrome();});
-import('./hq-3d.js').then(mountCurrentHQ).catch(error=>{console.error('Could not start Nyoni HQ 3D',error);const host=$('#hq-3d-stage');host?.classList.add('has-error');const status=host?.querySelector('[data-3d-status]');if(status)status.textContent=`3D module error: ${error?.message||'unknown error'}`});
+getAgentRuntimeStatus({refresh:true}).then((status)=>{runtime={loading:false,...status};clearIssue('runtime');render();void syncRemoteAssignments();setInterval(()=>syncRemoteAssignments(),8000);}).catch((error)=>{console.warn('Agent runtime status unavailable',error);runtime={...runtime,loading:false};updateRuntimeChrome();reportIssue('runtime','Agent runtime is unavailable',error)});
+import('./hq-3d.js').then(mountCurrentHQ).catch(error=>{console.error('Could not start Nyoni HQ 3D',error);const host=$('#hq-3d-stage');host?.classList.add('has-error');const status=host?.querySelector('[data-3d-status]');if(status)status.textContent=`3D module error: ${errorMessage(error)}`;reportIssue('3d','Interactive campus could not start',error)});

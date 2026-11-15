@@ -3,6 +3,7 @@ blender_pack/
 node_modules/
 .eve/
 .output/
+dist/
 .git/
 *.blend
 *.blend1
