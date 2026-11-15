@@ -3,7 +3,10 @@ import { sleep } from 'workflow';
 import { codexModel, runNyoniAgent } from '../server/nyoni-runtime.js';
 import { getHunterInboxContext } from '../server/google-tools.js';
 import { recordAssignmentEvent, studioClient } from '../server/nyoni-store.js';
-import { isMediaAgent, persistStudioGeneration, pollStudioGeneration, submitStudioGeneration } from '../server/studio-tools.js';
+import { isMediaAgent, persistStudioGeneration, pollStudioGeneration, submitPrismFinishing, submitStudioGeneration } from '../server/production-tools.js';
+import { resolveProductionContext, persistProductionPacket } from '../server/production-context.js';
+import { buildMotionProductionPrompt } from '../server/motion-engine.js';
+import { evaluateProductionQuality } from '../server/quality-control.js';
 
 async function getAssignment(assignmentId) {
   'use step';
@@ -351,16 +354,22 @@ async function finalizeCommercial(assignment, stages) {
   const { error: versionError } = await client.from('nyoni_artifact_versions').insert({ artifact_id: artifact.id, owner_id: assignment.owner_id, version: 1, content, created_by_agent_id: 'rally' });
   if (versionError) throw new Error(`Campaign version creation failed: ${versionError.message}`);
   const result = { ...content, artifactId: artifact.id, providers: { ...stages.assembly.providers, studio: stages.production.provider, model: stages.production.model }, collaboration: ['migo','scout','creative','lumina','pulse','rally'] };
-  const { error } = await client.from('nyoni_assignments').update({ status: 'done', result, total_cost_usd: stages.production.totalCostUsd, completed_at: now, updated_at: now }).eq('id', assignment.id);
+  const { error: approvalError } = await client.from('nyoni_approval_requests').insert({
+    assignment_id: assignment.id, owner_id: assignment.owner_id, action_type: 'approve_content_package',
+    payload: { tier: 'B', artifactId: artifact.id, media: stages.production.media, totalCostUsd: stages.production.totalCostUsd, externalAction: 'publishing_remains_separately_gated' },
+    payload_sha256: assignment.id, status: 'pending', created_at: now,
+  });
+  if (approvalError) throw new Error(`Founder approval request failed: ${approvalError.message}`);
+  const { error } = await client.from('nyoni_assignments').update({ status: 'waiting_approval', production_state: 'ready_founder_review', result, total_cost_usd: stages.production.totalCostUsd, completed_at: now, updated_at: now }).eq('id', assignment.id);
   if (error) throw new Error(`Campaign finalization failed: ${error.message}`);
-  await recordAssignmentEvent(assignment, 'workflow.completed', 'Collaborative commercial package completed', { artifactId: artifact.id, agents: result.collaboration, costUsd: stages.production.totalCostUsd });
+  await recordAssignmentEvent(assignment, 'workflow.waiting_approval', 'Collaborative commercial package is ready for founder review', { artifactId: artifact.id, agents: result.collaboration, costUsd: stages.production.totalCostUsd });
   return result;
 }
 
-async function submitMediaStep(assignment, deliverable, step = {}) {
+async function submitMediaStep(assignment, deliverable, step = {}, generationOptions = {}) {
   'use step';
   await writeStep(assignment, { key: step.key || 'studio-generation', position: step.position || 4, agentId: assignment.agent_id, title: step.title || `${assignment.agent_id} generates media in Nyoni Studio`, status: 'running', input: { sourceUrl: assignment.source_url || null } });
-  return submitStudioGeneration(assignment, deliverable.output);
+  return submitStudioGeneration(assignment, deliverable.output, generationOptions);
 }
 
 async function pollMediaStep(assignment, job) {
@@ -375,8 +384,8 @@ async function persistMediaStep(assignment, job, step = {}) {
   return production;
 }
 
-async function runMediaProduction(assignment, deliverable, step = {}) {
-  let job = await submitMediaStep(assignment, deliverable, step);
+async function runMediaProduction(assignment, deliverable, step = {}, generationOptions = {}) {
+  let job = await submitMediaStep(assignment, deliverable, step, generationOptions);
   for (let attempt = 0; attempt < 90 && job.status !== 'completed'; attempt += 1) {
     await sleep('10s');
     job = await pollMediaStep(assignment, job);
@@ -473,26 +482,34 @@ async function finalizeAutonomousContent(assignment, stages) {
   const now = new Date().toISOString();
   const media = stages.productions.flatMap((item) => item.media);
   const totalCostUsd = stages.productions.reduce((sum, item) => sum + Number(item.totalCostUsd || 0), 0);
+  const playableVideo = media.find((item) => item.type === 'video' && item.url);
+  const missingItems = playableVideo ? [] : [{ code: 'FINAL_VIDEO_MISSING', message: 'The workflow requires a playable final video, but no video asset was persisted.', requiredType: 'video' }];
   const { data: artifact, error: artifactError } = await client.from('nyoni_artifacts').insert({
     assignment_id: assignment.id, project_id: assignment.project_id, owner_id: assignment.owner_id,
-    artifact_type: 'autonomous_content_package', title: assignment.title, status: 'ready', current_version: 1,
-    metadata: { leadAgentId: 'rally', mediaCount: media.length, totalCostUsd, requiresFounderApproval: true },
+    artifact_type: 'autonomous_content_package', title: assignment.title, status: playableVideo ? 'ready' : 'incomplete', current_version: 1,
+    metadata: { leadAgentId: 'rally', mediaCount: media.length, totalCostUsd, requiresFounderApproval: Boolean(playableVideo), missingItems },
   }).select('*').single();
   if (artifactError) throw new Error(`Content artifact creation failed: ${artifactError.message}`);
   const content = { plan: stages.plan, research: stages.trendRadar.research, sources: stages.trendRadar.sources, creative: stages.creative, deliverable: stages.assembly.output, media, qa: stages.qa };
   const { error: versionError } = await client.from('nyoni_artifact_versions').insert({ artifact_id: artifact.id, owner_id: assignment.owner_id, version: 1, content, created_by_agent_id: 'rally' });
   if (versionError) throw new Error(`Content artifact version failed: ${versionError.message}`);
-  const result = { ...content, artifactId: artifact.id, totalCostUsd, collaboration: ['migo','scout','creative','lumina','nova','vox','pulse','rally'], approval: 'required_before_publishing' };
-  const { error: approvalError } = await client.from('nyoni_approval_requests').insert({
-    assignment_id: assignment.id, owner_id: assignment.owner_id, action_type: 'approve_content_package',
-    payload: { tier: 'B', artifactId: artifact.id, media, totalCostUsd, externalAction: 'publishing_remains_separately_gated' },
-    payload_sha256: assignment.id, status: 'pending', created_at: now,
-  });
-  if (approvalError) throw new Error(`Founder approval request failed: ${approvalError.message}`);
-  const { error } = await client.from('nyoni_assignments').update({ status: 'waiting_approval', result, total_cost_usd: totalCostUsd, completed_at: now, updated_at: now }).eq('id', assignment.id);
+  const result = { ...content, artifactId: artifact.id, totalCostUsd, missingItems, collaboration: ['migo','scout','creative','lumina','nova','vox','pulse','rally'], approval: playableVideo ? 'required_before_publishing' : 'unavailable_until_required_media_exists' };
+  if (playableVideo) {
+    const { error: approvalError } = await client.from('nyoni_approval_requests').insert({
+      assignment_id: assignment.id, owner_id: assignment.owner_id, action_type: 'approve_content_package',
+      payload: { tier: 'B', artifactId: artifact.id, media, totalCostUsd, externalAction: 'publishing_remains_separately_gated' },
+      payload_sha256: assignment.id, status: 'pending', created_at: now,
+    });
+    if (approvalError) throw new Error(`Founder approval request failed: ${approvalError.message}`);
+  }
+  const { error } = await client.from('nyoni_assignments').update({
+    status: playableVideo ? 'waiting_approval' : 'failed', production_state: playableVideo ? 'ready_founder_review' : 'media_blocked',
+    result, error: playableVideo ? null : missingItems[0].message, total_cost_usd: totalCostUsd,
+    completed_at: playableVideo ? now : null, updated_at: now,
+  }).eq('id', assignment.id);
   if (error) throw new Error(`Content pipeline finalization failed: ${error.message}`);
-  await recordHandoff(assignment, 'rally-to-migo-content-review', 'rally', 'migo', { artifactId: artifact.id, media, decision: 'founder_approval' });
-  await recordAssignmentEvent(assignment, 'workflow.waiting_approval', 'Autonomous content package is ready for one founder decision', { artifactId: artifact.id, agents: result.collaboration, costUsd: totalCostUsd });
+  await recordHandoff(assignment, 'rally-to-migo-content-review', 'rally', 'migo', { artifactId: artifact.id, media, decision: playableVideo ? 'founder_approval' : 'required_media_missing' });
+  await recordAssignmentEvent(assignment, playableVideo ? 'workflow.waiting_approval' : 'workflow.media_blocked', playableVideo ? 'Autonomous content package is ready for one founder decision' : 'Production stopped safely because the required playable video is missing', { artifactId: artifact.id, agents: result.collaboration, costUsd: totalCostUsd, missingItems });
   return result;
 }
 
@@ -585,14 +602,265 @@ async function finalizeCarousel(assignment, deliverable) {
   return result;
 }
 
+async function runCoreStory(assignment, plan, workflowKind, research = null) {
+  'use step';
+  const commercial = workflowKind === 'nyoni_commercials_pipeline';
+  const agentId = commercial ? 'creative' : 'story';
+  const key = commercial ? 'commercial-concept' : 'story-script';
+  const title = commercial ? 'Creative develops the commercial concept and script' : 'Story writes the production script';
+  await recordHandoff(assignment, `migo-to-${agentId}-production-core`, 'migo', agentId, { assignment: assignment.title, plan, projectId: assignment.project_id });
+  await writeStep(assignment, { key, position: 2, agentId, title, status: 'running', input: { plan, projectContext: true } });
+  const result = await runNyoniAgent({
+    agentId, project: assignment.projectName, projectContext: assignment.projectContext,
+    title: commercial
+      ? `Create one original portfolio advertisement concept and timed video script for this production. Preserve any supplied brand or product facts and clearly mark unknowns. Do not claim generation or publishing happened.\n\nMISSION:\n${assignment.title}\n\nMIGO PLAN:\n${plan}\n\nSCOUT RESEARCH:\n${research || 'No verified external research was available; do not invent current trends.'}`
+      : `Write one complete original entertainment-short script for production. Preserve all supplied canon and do not advance founder-directed shows beyond the selected approved scene. Make actions visible, dialogue performable, and the requested duration feasible.\n\nMISSION:\n${assignment.title}\n\nMIGO PLAN:\n${plan}`,
+  });
+  await writeStep(assignment, { key, position: 2, agentId, title, status: 'done', output: { script: result.output, sessionId: result.sessionId } });
+  return { ...result, agentId };
+}
+
+async function runCoreCreative(assignment, plan, story, workflowKind) {
+  'use step';
+  const fromAgent = story.agentId;
+  await recordHandoff(assignment, `${fromAgent}-to-creative-production-core`, fromAgent, 'creative', { script: story.output, plan });
+  await writeStep(assignment, { key: 'production-art-direction', position: 3, agentId: 'creative', title: 'Creative locks art direction and continuity', status: 'running', input: { script: story.output } });
+  const result = await runNyoniAgent({
+    agentId: 'creative', project: assignment.projectName, projectContext: assignment.projectContext,
+    title: `Define production-ready visual direction for the script below. Lock approved identities and product/brand representation, environment, materials, lighting, color, wardrobe, props, continuity, and negative constraints. For SANKOFI preserve painterly PBR stylized 3D. Do not invent missing canon or claim assets exist.\n\nWORKFLOW: ${workflowKind}\nMISSION: ${assignment.title}\nSCRIPT:\n${story.output}\nPLAN:\n${plan}`,
+  });
+  await writeStep(assignment, { key: 'production-art-direction', position: 3, agentId: 'creative', title: 'Creative locks art direction and continuity', status: 'done', output: { direction: result.output, sessionId: result.sessionId } });
+  return result;
+}
+
+async function runCoreSound(assignment, plan, story, creative) {
+  'use step';
+  await recordHandoff(assignment, 'creative-to-sonora-production-core', 'creative', 'sonora', { script: story.output, creative: creative.output });
+  await writeStep(assignment, { key: 'production-sound-direction', position: 4, agentId: 'sonora', title: 'Sonora designs synchronized sound direction', status: 'running', input: { script: story.output, kieEmbeddedAudio: true } });
+  const result = await runNyoniAgent({
+    agentId: 'sonora', project: assignment.projectName, projectContext: assignment.projectContext,
+    title: `Design a precise sound plan for this short video. Specify time-coded ambience, Foley, impacts, transitions, musical texture, dynamics, and silence. Keep dialogue out unless it is explicitly present in the script. This sound plan will be embedded in the KIE Seedance prompt; do not request a separate Suno, WaveSpeed, or ElevenLabs generation.\n\nMISSION: ${assignment.title}\nPLAN: ${plan}\nSCRIPT: ${story.output}\nVISUAL DIRECTION: ${creative.output}`,
+  });
+  await writeStep(assignment, { key: 'production-sound-direction', position: 4, agentId: 'sonora', title: 'Sonora designs synchronized sound direction', status: 'done', output: { soundDirection: result.output, providerPlan: 'KIE Seedance synchronized audio only' } });
+  return result;
+}
+
+async function buildCorePacket(assignment, story, creative, sound, workflowKind) {
+  'use step';
+  await recordHandoff(assignment, 'sonora-to-motion-production-core', 'sonora', 'motion', { script: story.output, creative: creative.output, soundDirection: sound.output });
+  await writeStep(assignment, { key: 'production-context', position: 4, agentId: 'motion', title: 'Motion resolves canon and compiles the Scene Production Packet', status: 'running', input: { stableIds: assignment.request?.production || {} } });
+  const requested = assignment.request?.production || {};
+  const founderDirected = ['Colony Zero', 'Palava 231'].includes(assignment.projectName);
+  const generation = {
+    mode: requested.mode || (requested.referenceAssetIds?.length ? 'reference-to-video' : 'text-to-video'),
+    provider: requested.provider || 'kie', model: requested.model || 'bytedance/seedance-2-5',
+    durationSeconds: Number(requested.durationSeconds || (workflowKind === 'nyoni_commercials_pipeline' ? 8 : 10)),
+    resolution: requested.resolution || '720p',
+    aspectRatio: requested.aspectRatio || (workflowKind === 'nyoni_commercials_pipeline' ? '9:16' : '16:9'),
+    generateAudio: requested.generateAudio === true, returnLastFrame: true,
+  };
+  let packet = await resolveProductionContext(assignment, {
+    requiresSeries: founderDirected,
+    seriesDocumentId: requested.seriesDocumentId, productionDocumentId: requested.productionDocumentId,
+    episodeId: requested.episodeId, sceneId: requested.sceneId, shotId: requested.shotId,
+    characterIds: requested.characterIds || [], assetIds: requested.referenceAssetIds || [],
+    scriptText: founderDirected ? undefined : story.output,
+    generation, estimatedUsd: 0, approvedLimitUsd: Number(requested.approvedLimitUsd || 0),
+    expectedDeliverables: assignment.request?.expectedDeliverables || [
+      { id: 'final-video', type: 'video', required: true, playable: true, label: 'Playable final video' },
+      { id: 'review-package', type: 'review_package', required: true, playable: false, label: 'Founder review package' },
+    ],
+    visualDirection: { creativeBrief: creative.output, soundDirection: sound.output },
+  });
+  const motionDraft = await runNyoniAgent({
+    agentId: 'motion', project: assignment.projectName, projectContext: assignment.projectContext,
+    title: `Convert this authoritative production context into exact shot direction. Specify character positions, screen geography, time-coded actions, performance, lens, motivated camera movement, foreground depth, light, materials, physics, contact, follow-through, synchronized sound, and negative constraints. Never discard a critical reference.\n\nSCRIPT:\n${packet.script.text}\n\nCREATIVE:\n${creative.output}\n\nSONORA SOUND PLAN:\n${sound.output}\n\nREFERENCES:\n${packet.references.map((item, index) => `${index + 1}. ${item.label} — ${item.role} — ${item.priority}`).join('\n') || 'None'}`,
+  });
+  packet = { ...packet, motionPrompt: buildMotionProductionPrompt(packet, { goal: motionDraft.output }) };
+  const persisted = await persistProductionPacket(packet);
+  await writeStep(assignment, { key: 'production-context', position: 4, agentId: 'motion', title: 'Motion resolves canon and compiles the Scene Production Packet', status: packet.blockers.length ? 'failed' : 'done', output: { packetId: persisted.id, schemaVersion: packet.schemaVersion, packetVersion: packet.packetVersion, blockers: packet.blockers, referenceManifest: packet.references.map((item, position) => ({ position: position + 1, id: item.id, role: item.role, priority: item.priority })) }, error: packet.blockers.length ? packet.blockers.map((item) => item.message).join(' ') : null });
+  return { packet, packetRowId: persisted.id, motionSessionId: motionDraft.sessionId };
+}
+
+async function createCoreProductionJob(assignment, packetRowId, packet, agentId, jobKind = packet.generation.mode) {
+  'use step';
+  const client = studioClient();
+  const { data, error } = await client.from('nyoni_production_jobs').upsert({
+    owner_id: assignment.owner_id, project_id: assignment.project_id, assignment_id: assignment.id,
+    packet_id: packetRowId, agent_id: agentId, job_kind: jobKind, state: 'queued',
+    idempotency_key: `${assignment.id}:packet:${packet.packetVersion}:${agentId}:${jobKind}`,
+    input: { packetId: packet.packetId, packetVersion: packet.packetVersion, expectedDeliverables: packet.expectedDeliverables },
+    estimated_cost_usd: packet.budget.estimatedUsd,
+  }, { onConflict: 'owner_id,idempotency_key' }).select('*').single();
+  if (error) throw new Error(`Production job creation failed: ${error.message}`);
+  return data;
+}
+
+async function updateCoreProductionJob(jobId, patch) {
+  'use step';
+  const client = studioClient();
+  const { error } = await client.from('nyoni_production_jobs').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', jobId);
+  if (error) throw new Error(`Production job update failed: ${error.message}`);
+}
+
+async function runCoreGeneration(assignment, core) {
+  const packet = core.packet;
+  const agentId = packet.generation.mode === 'image-to-video' ? 'kinetic' : packet.generation.mode === 'video-edit' ? 'cutline' : 'nova';
+  await recordHandoff(assignment, `motion-to-${agentId}-production-core`, 'motion', agentId, { packetId: core.packetRowId, mode: packet.generation.mode, referenceCount: packet.references.length });
+  if (packet.blockers.length) return { blocked: true, reason: packet.blockers.map((item) => item.message).join(' '), media: [], totalCostUsd: 0, agentId };
+  const jobRow = await createCoreProductionJob(assignment, core.packetRowId, packet, agentId);
+  await updateCoreProductionJob(jobRow.id, { state: 'running', started_at: new Date().toISOString(), attempt: Number(jobRow.attempt || 0) + 1 });
+  try {
+    const production = await runMediaProduction(
+      { ...assignment, agent_id: agentId }, { output: packet.motionPrompt },
+      { key: 'core-video-generation', position: 5, title: `${agentId} generates the packet's final video` },
+      { packet, productionJobId: jobRow.id, idempotencyKey: jobRow.idempotency_key },
+    );
+    await updateCoreProductionJob(jobRow.id, { state: 'completed', output: production, provider: production.provider, actual_cost_usd: production.totalCostUsd, completed_at: new Date().toISOString() });
+    return { ...production, agentId, productionJobId: jobRow.id };
+  } catch (error) {
+    const reason = error?.message || 'Video generation failed.';
+    await updateCoreProductionJob(jobRow.id, { state: 'blocked', error: { code: 'GENERATION_BLOCKED', message: reason } });
+    await writeStep(assignment, { key: 'core-video-generation', position: 5, agentId, title: `${agentId} generates the packet's final video`, status: 'failed', error: reason, output: { media: [], blocked: true, reason } });
+    return { blocked: true, reason, media: [], totalCostUsd: 0, agentId, productionJobId: jobRow.id };
+  }
+}
+
+async function runCoreQa(assignment, core, production) {
+  'use step';
+  await recordHandoff(assignment, `${production.agentId}-to-pulse-production-core`, production.agentId, 'pulse', { packetId: core.packetRowId, productionJobId: production.productionJobId, media: production.media || [] });
+  await writeStep(assignment, { key: 'core-preliminary-qa', position: 6, agentId: 'pulse', title: 'Pulse performs structured preliminary QA', status: 'running', input: { packetId: core.packetRowId, media: production.media || [] } });
+  const review = evaluateProductionQuality({
+    packet: core.packet, media: production.media || [], stage: 'preliminary',
+    technical: production.media?.length ? {
+      resolution: core.packet.generation.resolution, aspectRatio: core.packet.generation.aspectRatio,
+      durationSeconds: core.packet.generation.durationSeconds, submittedReferenceIds: core.packet.references.map((item) => item.id), syntheticVoiceUsed: false,
+      verificationScope: 'provider-request-and-persisted-media; codec probing pending',
+    } : {},
+  });
+  const client = studioClient();
+  const { error } = await client.from('nyoni_quality_reviews').insert({
+    owner_id: assignment.owner_id, project_id: assignment.project_id, assignment_id: assignment.id,
+    packet_id: core.packetRowId, asset_id: production.media?.find((item) => item.type === 'video')?.assetId || null,
+    stage: 'preliminary', disposition: review.disposition, observations: review.observations, measurements: review.measurements, reviewer_agent_id: 'pulse',
+  });
+  if (error) throw new Error(`Pulse review persistence failed: ${error.message}`);
+  await writeStep(assignment, { key: 'core-preliminary-qa', position: 6, agentId: 'pulse', title: 'Pulse performs structured preliminary QA', status: review.disposition === 'PASS' ? 'done' : 'failed', output: review, error: review.disposition === 'PASS' ? null : `${review.disposition}: ${review.observations.map((item) => item.message).join(' ')}` });
+  return review;
+}
+
+async function runCoreFinishing(assignment, core, production, preliminaryQa) {
+  const targetResolution = assignment.request?.production?.targetResolution;
+  if (!targetResolution || String(targetResolution).toLowerCase() === String(core.packet.generation.resolution).toLowerCase()) {
+    await writeStep(assignment, { key: 'core-finishing', position: 7, agentId: 'cutline', title: 'Cutline / Prism finishing', status: 'skipped', output: { skipped: true, reason: 'No higher final-resolution export was requested.', preservedOriginals: true } });
+    return { production, finalQa: { ...preliminaryQa, stage: 'final_technical', canFounderReview: preliminaryQa.disposition === 'PASS' }, finished: false };
+  }
+  await recordHandoff(assignment, 'pulse-to-prism-finishing', 'pulse', 'cutline', { packetId: core.packetRowId, targetResolution, preliminaryQa: preliminaryQa.disposition });
+  const sourceVideo = production.media?.find((item) => item.type === 'video');
+  const jobRow = await createCoreProductionJob(assignment, core.packetRowId, core.packet, 'cutline', 'video-upscale');
+  await writeStep(assignment, { key: 'core-finishing', position: 7, agentId: 'cutline', title: `Prism finishes the video at ${targetResolution}`, status: 'running', input: { sourceAssetId: sourceVideo?.assetId, targetResolution, preserveOriginal: true } });
+  try {
+    let job = await submitPrismFinishing(assignment, {
+      packet: core.packet, video: sourceVideo, preliminaryReview: preliminaryQa, targetResolution,
+      remainingBudgetUsd: Math.max(0, Number(core.packet.budget.approvedLimitUsd || 0) - Number(production.totalCostUsd || 0)),
+      productionJobId: jobRow.id,
+    });
+    for (let attempt = 0; attempt < 90 && job.status !== 'completed'; attempt += 1) { await sleep('10s'); job = await pollMediaStep(assignment, job); }
+    if (job.status !== 'completed') throw new Error('Prism finishing timed out before WaveSpeed returned the export.');
+    const finished = await persistStudioGeneration(assignment, job);
+    finished.media = finished.media.map((item) => ({ ...item, resolution: targetResolution, durationSeconds: core.packet.generation.durationSeconds, role: 'finished_export' }));
+    const combined = { ...production, media: [...(production.media || []).map((item) => ({ ...item, role: item.role || 'original_generation' })), ...finished.media], totalCostUsd: Number(production.totalCostUsd || 0) + Number(finished.totalCostUsd || 0), finishing: finished };
+    const finalPacket = { ...core.packet, generation: { ...core.packet.generation, resolution: targetResolution } };
+    const finalQa = evaluateProductionQuality({ packet: finalPacket, media: finished.media, stage: 'final_technical', technical: { resolution: targetResolution, aspectRatio: core.packet.generation.aspectRatio, durationSeconds: core.packet.generation.durationSeconds, submittedReferenceIds: core.packet.references.map((item) => item.id), verificationScope: 'persisted finishing output metadata; codec probing pending' } });
+    const client = studioClient();
+    const { error } = await client.from('nyoni_quality_reviews').insert({ owner_id: assignment.owner_id, project_id: assignment.project_id, assignment_id: assignment.id, packet_id: core.packetRowId, asset_id: finished.media[0]?.assetId || null, stage: 'final_technical', disposition: finalQa.disposition, observations: finalQa.observations, measurements: finalQa.measurements, reviewer_agent_id: 'pulse' });
+    if (error) throw new Error(`Final technical review persistence failed: ${error.message}`);
+    await updateCoreProductionJob(jobRow.id, { state: finalQa.disposition === 'PASS' ? 'completed' : 'needs_repair', output: finished, provider: finished.provider, actual_cost_usd: finished.totalCostUsd, completed_at: new Date().toISOString() });
+    await recordHandoff(assignment, 'cutline-to-pulse-final-qa', 'cutline', 'pulse', { packetId: core.packetRowId, finishingJobId: jobRow.id, finishedAssetIds: finished.media.map((item) => item.assetId) });
+    await writeStep(assignment, { key: 'core-finishing', position: 7, agentId: 'cutline', title: `Prism finishes the video at ${targetResolution}`, status: finalQa.disposition === 'PASS' ? 'done' : 'failed', output: { finished, finalQa, preservedOriginals: true }, error: finalQa.disposition === 'PASS' ? null : finalQa.observations.map((item) => item.message).join(' ') });
+    return { production: combined, finalQa, finished: true };
+  } catch (error) {
+    const reason = error?.message || 'Prism finishing failed.';
+    await updateCoreProductionJob(jobRow.id, { state: 'blocked', error: { code: 'FINISHING_BLOCKED', message: reason } });
+    await writeStep(assignment, { key: 'core-finishing', position: 7, agentId: 'cutline', title: `Prism finishes the video at ${targetResolution}`, status: 'failed', error: reason, output: { preservedOriginals: true } });
+    return { production: { ...production, blocked: true, reason, finishingBlocked: true }, finalQa: { ...preliminaryQa, disposition: 'FIX', stage: 'final_technical', observations: [...preliminaryQa.observations, { code: 'FINISHING_BLOCKED', severity: 'consequential', message: reason }] }, finished: false };
+  }
+}
+
+async function runCoreRally(assignment, plan, story, creative, core, production, qa) {
+  'use step';
+  await recordHandoff(assignment, 'pulse-to-rally-production-core', 'pulse', 'rally', { packetId: core.packetRowId, qa: qa.disposition, media: production.media || [] });
+  await writeStep(assignment, { key: 'core-review-package', position: 8, agentId: 'rally', title: 'Rally assembles the founder review package', status: 'running', input: { packetId: core.packetRowId, qa: qa.disposition } });
+  const result = await runNyoniAgent({
+    agentId: 'rally', project: assignment.projectName, projectContext: assignment.projectContext,
+    title: `Assemble a concise founder review package. Include project, concept, script summary, exact media manifest, provider/model, references used, resolution/duration/aspect ratio, QA disposition, estimated/actual spend, missing items, caption variants, and one approve/request-changes/reject decision. Do not claim publishing occurred.\n\nMISSION: ${assignment.title}\nPLAN: ${plan}\nSCRIPT: ${story.output}\nCREATIVE: ${creative.output}\nPACKET: ${JSON.stringify({ id: core.packet.packetId, generation: core.packet.generation, references: core.packet.references.map((item) => ({ id: item.id, label: item.label, role: item.role })) })}\nPRODUCTION: ${JSON.stringify(production)}\nQA: ${JSON.stringify(qa)}`,
+  });
+  await writeStep(assignment, { key: 'core-review-package', position: 8, agentId: 'rally', title: 'Rally assembles the founder review package', status: 'done', output: { package: result.output } });
+  return result;
+}
+
+async function finalizeCoreProduction(assignment, stages) {
+  'use step';
+  const client = studioClient(); const now = new Date().toISOString();
+  const media = stages.production.media || [];
+  const ready = !stages.production.blocked && stages.qa.disposition === 'PASS' && media.some((item) => item.type === 'video' && item.url);
+  const missingItems = ready ? [] : [
+    ...(stages.production.blocked ? [{ code: 'GENERATION_BLOCKED', message: stages.production.reason }] : []),
+    ...stages.qa.observations.map((item) => ({ code: item.code, message: item.message })),
+  ];
+  const { data: artifact, error: artifactError } = await client.from('nyoni_artifacts').insert({
+    assignment_id: assignment.id, project_id: assignment.project_id, owner_id: assignment.owner_id,
+    artifact_type: 'production_review_package', title: assignment.title, status: ready ? 'ready' : 'incomplete', current_version: 1,
+    metadata: { packetId: stages.core.packetRowId, mediaCount: media.length, qa: stages.qa.disposition, missingItems, requiresFounderApproval: ready },
+  }).select('*').single();
+  if (artifactError) throw new Error(`Production review artifact failed: ${artifactError.message}`);
+  const content = { plan: stages.plan, research: stages.research || null, script: stages.story.output, creative: stages.creative.output, soundDirection: stages.sound?.output || null, deliverable: stages.rally.output, media, qa: stages.qa, packet: stages.core.packet, production: stages.production, missingItems };
+  const { error: versionError } = await client.from('nyoni_artifact_versions').insert({ artifact_id: artifact.id, owner_id: assignment.owner_id, version: 1, content, created_by_agent_id: 'rally' });
+  if (versionError) throw new Error(`Production review version failed: ${versionError.message}`);
+  const result = { ...content, artifactId: artifact.id, totalCostUsd: stages.production.totalCostUsd || 0, providers: { studio: stages.production.provider, model: stages.production.model }, collaboration: ['migo', ...(stages.research ? ['scout'] : []), stages.story.agentId, 'creative', 'sonora', 'motion', stages.production.agentId, 'pulse', 'rally'] };
+  if (ready) {
+    const { error: approvalError } = await client.from('nyoni_approval_requests').insert({
+      assignment_id: assignment.id, owner_id: assignment.owner_id, action_type: 'approve_content_package',
+      payload: { tier: 'B', artifactId: artifact.id, packetId: stages.core.packetRowId, media, totalCostUsd: result.totalCostUsd, externalAction: 'publishing_remains_separately_gated' },
+      payload_sha256: assignment.id, status: 'pending', created_at: now,
+    });
+    if (approvalError) throw new Error(`Founder approval request failed: ${approvalError.message}`);
+  }
+  const { error } = await client.from('nyoni_assignments').update({
+    status: ready ? 'waiting_approval' : 'failed', production_state: ready ? 'ready_founder_review' : stages.qa.disposition === 'FIX' && !stages.production.blocked ? 'needs_qa_repair' : 'media_blocked',
+    result, error: ready ? null : missingItems.map((item) => item.message).join(' '), total_cost_usd: result.totalCostUsd,
+    completed_at: ready ? now : null, updated_at: now,
+  }).eq('id', assignment.id);
+  if (error) throw new Error(`Production finalization failed: ${error.message}`);
+  await recordHandoff(assignment, 'rally-to-migo-production-review', 'rally', 'migo', { artifactId: artifact.id, packetId: stages.core.packetRowId, ready, missingItems });
+  await recordAssignmentEvent(assignment, ready ? 'workflow.waiting_approval' : 'workflow.incomplete', ready ? 'Finished production is ready for founder review' : 'Production stopped with explicit missing media or QA issues', { artifactId: artifact.id, packetId: stages.core.packetRowId, missingItems, costUsd: result.totalCostUsd });
+  return result;
+}
+
+async function runProductionCoreWorkflow(assignment, plan, workflowKind) {
+  const research = workflowKind === 'nyoni_commercials_pipeline' ? await runCommercialResearch(assignment, plan) : null;
+  const story = await runCoreStory(assignment, plan, workflowKind, research);
+  const creative = await runCoreCreative(assignment, plan, story, workflowKind);
+  const sound = await runCoreSound(assignment, plan, story, creative);
+  const core = await buildCorePacket(assignment, story, creative, sound, workflowKind);
+  const production = await runCoreGeneration(assignment, core);
+  const preliminaryQa = await runCoreQa(assignment, core, production);
+  const finishing = await runCoreFinishing(assignment, core, production, preliminaryQa);
+  const qa = finishing.finalQa;
+  const rally = await runCoreRally(assignment, plan, story, creative, core, finishing.production, qa);
+  return finalizeCoreProduction(assignment, { plan, research, story, creative, sound, core, production: finishing.production, qa, rally });
+}
+
 async function finalizeAssignment(assignment, plan, deliverable, production = null) {
   'use step';
   const client = studioClient();
   const now = new Date().toISOString();
   const productionSucceeded = Boolean(production?.media?.length);
+  const requiredMediaRequested = ['studio_generation','watch_nyoni_pipeline','nyoni_commercials_pipeline'].includes(assignment.workflow_kind) || Boolean(assignment.request?.expectedDeliverables?.some((item) => item.required && ['video','image','audio'].includes(item.type)));
+  const mediaIncomplete = requiredMediaRequested && !productionSucceeded;
   const { data: artifact, error: artifactError } = await client.from('nyoni_artifacts').insert({
     assignment_id: assignment.id, project_id: assignment.project_id, owner_id: assignment.owner_id,
-    artifact_type: productionSucceeded ? production.kind : 'document', title: assignment.title, status: 'ready', current_version: 1,
+    artifact_type: productionSucceeded ? production.kind : 'document', title: assignment.title, status: mediaIncomplete ? 'incomplete' : 'ready', current_version: 1,
     metadata: { agentId: deliverable.agentId, sessionId: deliverable.sessionId, mediaCount: production?.media?.length || 0, generationSkipped: Boolean(production?.skipped), generationReason: production?.reason || null },
   }).select('*').single();
   if (artifactError) throw new Error(`Artifact creation failed: ${artifactError.message}`);
@@ -603,10 +871,12 @@ async function finalizeAssignment(assignment, plan, deliverable, production = nu
   if (versionError) throw new Error(`Artifact version failed: ${versionError.message}`);
   const result = { plan, deliverable: deliverable.output, collaboration: deliverable.collaboration || [deliverable.agentId], artifactId: artifact.id, providers: { ...deliverable.providers, ...(productionSucceeded ? { studio: production.provider, model: production.model } : {}) }, media: production?.media || [], production };
   const { error } = await client.from('nyoni_assignments').update({
-    status: 'done', result, total_cost_usd: production?.totalCostUsd || 0, completed_at: now, updated_at: now,
+    status: mediaIncomplete ? 'failed' : 'done', production_state: mediaIncomplete ? 'media_blocked' : productionSucceeded ? 'ready_founder_review' : 'creative_planning',
+    result, error: mediaIncomplete ? production?.reason || 'Required media was not produced.' : null,
+    total_cost_usd: production?.totalCostUsd || 0, completed_at: mediaIncomplete ? null : now, updated_at: now,
   }).eq('id', assignment.id);
   if (error) throw new Error(`Assignment finalization failed: ${error.message}`);
-  await recordAssignmentEvent(assignment, 'workflow.completed', productionSucceeded ? 'Generated media completed and is available in deliverables' : production?.skipped ? `Written deliverable completed; paid generation skipped: ${production.reason}` : 'Internal deliverable completed', { artifactId: artifact.id, mediaCount: production?.media?.length || 0, generationSkipped: Boolean(production?.skipped) });
+  await recordAssignmentEvent(assignment, mediaIncomplete ? 'workflow.media_blocked' : 'workflow.completed', productionSucceeded ? 'Generated media completed and is available in deliverables' : mediaIncomplete ? `Required media was not completed: ${production?.reason || 'provider returned no durable media'}` : 'Internal planning deliverable completed', { artifactId: artifact.id, mediaCount: production?.media?.length || 0, generationSkipped: Boolean(production?.skipped) });
   return result;
 }
 
@@ -614,7 +884,7 @@ async function markFailed(assignmentId, message) {
   'use step';
   const client = studioClient();
   const { data } = await client.from('nyoni_assignments').update({
-    status: 'failed', error: message, updated_at: new Date().toISOString(),
+    status: 'failed', production_state: 'failed', error: message, updated_at: new Date().toISOString(),
   }).eq('id', assignmentId).select('*').maybeSingle();
   if (data) await recordAssignmentEvent(data, 'workflow.failed', message);
 }
@@ -628,6 +898,9 @@ export async function runNyoniAssignmentWorkflow(assignmentId) {
     const plan = await runPlanningStep(assignment);
     const readiness = await checkCarouselReadiness(assignment, plan);
     if (!readiness.ready) return { status: 'waiting_approval', blockers: readiness.blockers };
+    if (['watch_nyoni_pipeline', 'nyoni_commercials_pipeline'].includes(assignment.workflow_kind)) {
+      return await runProductionCoreWorkflow(assignment, plan, assignment.workflow_kind);
+    }
     if (assignment.workflow_kind === 'autonomous_content_pipeline') {
       const trendRadar = await runLiveTrendRadar(assignment, plan);
       const creative = await runContentCreative(assignment, plan, trendRadar);

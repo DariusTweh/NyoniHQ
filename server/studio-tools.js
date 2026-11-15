@@ -82,13 +82,8 @@ async function submitKie(assignment, config, prompt) {
 async function submitElevenLabs(assignment, config, prompt) {
   if (!process.env.ELEVENLABS_API_KEY) throw new Error('ELEVENLABS_API_KEY is not connected.');
   const headers = { 'xi-api-key': process.env.ELEVENLABS_API_KEY };
-  let voiceId = process.env.NYONI_ELEVENLABS_VOICE_ID;
-  if (!voiceId) {
-    const voicesResponse = await fetch('https://api.elevenlabs.io/v1/voices', { headers, signal: AbortSignal.timeout(20000) });
-    const voices = await voicesResponse.json().catch(() => null);
-    voiceId = voices?.voices?.[0]?.voice_id;
-  }
-  if (!voiceId) throw new Error('ElevenLabs has no available voice. Configure NYONI_ELEVENLABS_VOICE_ID.');
+  const voiceId = process.env.NYONI_ELEVENLABS_VOICE_ID;
+  if (!voiceId) throw new Error('Configure an explicitly approved NYONI_ELEVENLABS_VOICE_ID. Automatic first-voice selection is disabled.');
   const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/with-timestamps?output_format=mp3_44100_128`, {
     method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ text: prompt.slice(0, 5000), model_id: config.model }), signal: AbortSignal.timeout(120000),

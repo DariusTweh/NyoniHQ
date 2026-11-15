@@ -60,7 +60,11 @@ export async function listStudioActivity() {
 export async function createStudioAssignment(task) {
   const response = await request('/api/assignments', {
     method: 'POST', headers: studioHeaders(),
-    body: JSON.stringify({ title: task.title, agentId: task.agent, project: task.project, sourceUrl: task.sourceUrl || null, workflowKind: task.workflowKind || null }),
+    body: JSON.stringify({
+      title: task.title, agentId: task.agent, project: task.project, sourceUrl: task.sourceUrl || null,
+      workflowKind: task.workflowKind || null, production: task.production || null,
+      expectedDeliverables: task.expectedDeliverables || null, voiceProfileId: task.voiceProfileId || null,
+    }),
   }, 'The assignment could not be created.');
   return (await response.json()).assignment;
 }

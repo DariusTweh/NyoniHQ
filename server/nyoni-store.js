@@ -45,15 +45,20 @@ export async function createAssignment(payload, env = process.env) {
   const mediaAgents = new Set(['lumina', 'reframe', 'nova', 'kinetic', 'cutline', 'sonora', 'vox', 'rally']);
   const agentId = payload.agentId || 'migo';
   const isCommercialPipeline = studio.projectName === 'Nyoni Commercials' && (agentId === 'rally' || /campaign|commercial|advert|launch creative/i.test(title));
-  const allowedWorkflowKinds = new Set(['general', 'carousel', 'studio_generation', 'commercial_pipeline', 'autonomous_content_pipeline']);
+  const allowedWorkflowKinds = new Set(['general', 'carousel', 'studio_generation', 'commercial_pipeline', 'autonomous_content_pipeline', 'watch_nyoni_pipeline', 'nyoni_commercials_pipeline']);
   const requestedWorkflowKind = allowedWorkflowKinds.has(payload.workflowKind) ? payload.workflowKind : null;
   const workflowKind = requestedWorkflowKind || (isCommercialPipeline ? 'commercial_pipeline' : mediaAgents.has(agentId) ? 'studio_generation' : /carousel|instagram slides?|social slides?/i.test(title) ? 'carousel' : 'general');
   const idempotencyKey = payload.idempotencyKey || `hq:${studio.ownerId}:${Date.now()}:${crypto.randomUUID()}`;
   const { data, error } = await studio.client.from('nyoni_assignments').insert({
     project_id: studio.projectId, owner_id: studio.ownerId, title: title.slice(0, 2000),
     agent_id: agentId, status: 'queued', workflow_kind: workflowKind,
-    approval_tier: ['carousel', 'studio_generation', 'autonomous_content_pipeline'].includes(workflowKind) ? 'B' : 'A', source_url: payload.sourceUrl || null,
-    idempotency_key: idempotencyKey, request: { project: studio.projectName, brief: title, sourceUrl: payload.sourceUrl || null },
+    approval_tier: ['carousel', 'studio_generation', 'autonomous_content_pipeline', 'watch_nyoni_pipeline', 'nyoni_commercials_pipeline'].includes(workflowKind) ? 'B' : 'A', source_url: payload.sourceUrl || null,
+    idempotency_key: idempotencyKey, request: {
+      project: studio.projectName, brief: title, sourceUrl: payload.sourceUrl || null,
+      production: payload.production && typeof payload.production === 'object' ? payload.production : null,
+      expectedDeliverables: Array.isArray(payload.expectedDeliverables) ? payload.expectedDeliverables : null,
+      voiceProfileId: payload.voiceProfileId || null,
+    },
   }).select('*').single();
   if (error) throw new Error(`Assignment creation failed: ${error.message}`);
   await recordAssignmentEvent(data, 'assignment.created', `Assignment queued for ${data.agent_id}`, { source: 'nyoni-hq' }, env);
@@ -112,6 +117,8 @@ export async function actOnAssignment(assignmentId, action, env = process.env) {
   const status = { approve: 'done', reject: 'queued', cancel: 'cancelled', retry: 'queued' }[action];
   if (!status) throw new Error('Unsupported assignment action.');
   const patch = { status, updated_at: new Date().toISOString() };
+  if (action === 'approve') patch.production_state = 'approved_release_slate';
+  if (action === 'reject') patch.production_state = 'changes_requested';
   if (action === 'retry' || action === 'reject') Object.assign(patch, { error: null, available_at: new Date().toISOString(), completed_at: null });
   const { data, error } = await client.from('nyoni_assignments').update(patch).eq('id', assignmentId).eq('owner_id', ownerId).select('*').single();
   if (error) throw new Error(`Assignment action failed: ${error.message}`);
