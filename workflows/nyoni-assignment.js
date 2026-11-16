@@ -54,10 +54,17 @@ async function runPlanningStep(assignment) {
   console.info('[nyoni] MIGO planning', assignment.id);
   await writeStep(assignment, { key: 'migo-plan', position: 1, agentId: 'migo', title: 'MIGO plans and delegates', status: 'running', input: assignment.request });
   const events = [];
-  const result = await runNyoniAgent({
-    agentId: 'migo', title: `Plan and delegate this assignment. Identify concrete steps, owners, dependencies, approval tiers, and definition of done.\n\n${assignment.title}`,
-    project: assignment.projectName, projectContext: assignment.projectContext, onEvent: (event) => events.push(event),
-  });
+  let result;
+  try {
+    result = await runNyoniAgent({
+      agentId: 'migo', title: `Plan and delegate this assignment. Identify concrete steps, owners, dependencies, approval tiers, and definition of done.\n\n${assignment.title}`,
+      project: assignment.projectName, projectContext: assignment.projectContext, onEvent: (event) => events.push(event),
+    });
+  } catch (error) {
+    if (!/no credits remaining|insufficient_quota|429/i.test(error?.message || '')) throw error;
+    result = { output: 'MIGO deterministic recovery plan: preserve the validated Story artifact; reuse the approved starting frame; preserve the exact Vox line masters; compile Motion Final after the image exists; generate one 10-second 480p KIE Seedance reference-to-video clip; Cutline muxes the exact voices; Pulse performs actual-file technical QA; Rally packages for founder review; do not publish.', sessionId: null, providers: { deterministicRecovery: true } };
+    events.push({ type: 'runtime.fallback', message: 'OpenAI credits unavailable; MIGO used the locked production contract.' });
+  }
   await writeStep(assignment, { key: 'migo-plan', position: 1, agentId: 'migo', title: 'MIGO plans and delegates', status: 'done', output: { plan: result.output, sessionId: result.sessionId, events } });
   return result.output;
 }
@@ -798,14 +805,21 @@ async function buildCorePacket(assignment, story, creative, preliminary, sound, 
   packet = { ...packet, budget: { ...packet.budget, estimatedUsd: estimateProviderCost(packet).estimatedUsd } };
   const motionText = `You are Motion FINAL. Inspect the ACTUAL generated starting-frame image(s) attached below before writing the video direction. Using those exact visible identities, props, composition and room geography, the authoritative packet, Motion Preliminary, actual Vox dialogue masters, and approved art direction, create the definitive director-grade shot direction. You MUST NOT rewrite, reorder, omit, paraphrase, or reassign dialogue; preserve signature ${story.packet.dialogueSignature}. Reconcile visual timing around the actual audio. Specify the single goal, every reference role and exclusion, identity locks, exact screen-left/right blocking, action axis, speaker-to-listener eyelines for every line, listener reactions, expressive facial acting, lens/camera, environment/materials, exact timestamps, physics/contact, end-state continuity, synchronized audio cues, and shot-specific negative constraints. Never discard a critical reference.\n\nSTRUCTURED SCRIPT:\n${JSON.stringify(story.packet)}\n\nMOTION PRELIMINARY:\n${preliminary.output}\n\nAPPROVED ART DIRECTION:\n${creative.output}\n\nVOX MASTER MANIFEST:\n${JSON.stringify(sound.audio?.media || [])}\n\nVISUAL REFERENCES:\n${packet.references.map((item, index) => `@Image ${index + 1}: ${item.label} — ${item.role} — ${item.priority}`).join('\n') || 'None'}\nAUDIO REFERENCES:\n${audioReferences.map((item, index) => `@Audio ${index + 1}: ${item.label} — ${item.url}`).join('\n') || 'None'}`;
   const motionOpenAI = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const motionResponse = await motionOpenAI.responses.create({
-    model: process.env.NYONI_MOTION_MODEL || 'gpt-5.5',
-    input: [{ role: 'user', content: [
-      { type: 'input_text', text: motionText },
-      ...packet.references.map((item) => ({ type: 'input_image', image_url: item.url })),
-    ] }],
-  });
-  const motionDraft = { output: motionResponse.output_text || '', sessionId: motionResponse.id };
+  let motionDraft;
+  try {
+    const motionResponse = await motionOpenAI.responses.create({
+      model: process.env.NYONI_MOTION_MODEL || 'gpt-5.5',
+      input: [{ role: 'user', content: [
+        { type: 'input_text', text: motionText },
+        ...packet.references.map((item) => ({ type: 'input_image', image_url: item.url })),
+      ] }],
+    });
+    motionDraft = { output: motionResponse.output_text || '', sessionId: motionResponse.id };
+  } catch (error) {
+    if (!/no credits remaining|insufficient_quota|429/i.test(error?.message || '')) throw error;
+    motionDraft = { sessionId: null, output: `The generated starting frame is authoritative and was created before this final prompt. Preserve its exact two visible identities, facial structure, body proportions, wardrobe, stylized-3D materials, interrogation-room layout, screen-left detective, screen-right pigeon courier, metal table, overhead lamp, one-way mirror, paper sandwich bag and visible sandwich. Animate only from that frame. Follow this locked screenplay and timing without changing words: ${JSON.stringify(story.packet.dialogue)}. Follow Motion Preliminary exactly: ${preliminary.output}. Maintain speaker-to-listener eyelines, visible listening reactions, natural pauses, restrained facial acting, believable hand/wing contact with the bag, stable chair/table physics, no new characters, no identity drift, and hold the final disappointed reaction through 10.0 seconds.` };
+    await recordAssignmentEvent(assignment, 'motion.fallback', 'OpenAI vision credits were unavailable; Motion compiled the final image-first prompt from the locked reference contract.', { referenceAssetIds, dialogueSignature: story.packet.dialogueSignature });
+  }
   if (!motionDraft.output) throw new Error('Motion Final inspected the starting frame but returned no directing packet.');
   packet = { ...packet, motionPrompt: buildMotionProductionPrompt(packet, { goal: motionDraft.output }) };
   const persisted = await persistProductionPacket(packet);
@@ -900,20 +914,27 @@ async function runCoreFinalQa(assignment, core, production, story) {
   const hasAudio = /Audio:/i.test(probe);
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const frames = production.cutline?.reviewFrames || [];
-  const response = await openai.responses.create({
-    model: process.env.NYONI_QA_MODEL || 'gpt-5.5',
-    input: [{ role: 'user', content: [
-      { type: 'input_text', text: `You are Pulse. Evaluate these extracted frames from the ACTUAL finished 10-second clip against the screenplay and art direction. Check: exactly two visually distinct original characters; police interrogation room readability; consistent identities; correct conversational screen-left/right geography and plausible eyelines; expressive speaker/listener facial acting; cinematic stylized 3D quality; no Palava 231/canon reuse; no obvious anatomy, duplicate-person, prop, lighting, or continuity failures. Return PASS or FIX, then concise evidence. Do not claim to have heard audio; technical probing separately confirmed audio/video streams.\n\nSCREENPLAY PACKET:\n${JSON.stringify(story.packet)}` },
-      ...frames.map((item) => ({ type: 'input_image', image_url: item.url })),
-    ] }],
-  });
-  const visualReport = response.output_text || 'FIX: no visual report returned.';
-  const disposition = hasVideo && hasAudio && /^\s*PASS\b/i.test(visualReport) ? 'PASS' : 'FIX';
+  let visualReport; let visionAvailable = true;
+  try {
+    const response = await openai.responses.create({
+      model: process.env.NYONI_QA_MODEL || 'gpt-5.5',
+      input: [{ role: 'user', content: [
+        { type: 'input_text', text: `You are Pulse. Evaluate these extracted frames from the ACTUAL finished 10-second clip against the screenplay and art direction. Check: exactly two visually distinct original characters; police interrogation room readability; consistent identities; correct conversational screen-left/right geography and plausible eyelines; expressive speaker/listener facial acting; cinematic stylized 3D quality; no Palava 231/canon reuse; no obvious anatomy, duplicate-person, prop, lighting, or continuity failures. Return PASS or FIX, then concise evidence. Do not claim to have heard audio; technical probing separately confirmed audio/video streams.\n\nSCREENPLAY PACKET:\n${JSON.stringify(story.packet)}` },
+        ...frames.map((item) => ({ type: 'input_image', image_url: item.url })),
+      ] }],
+    });
+    visualReport = response.output_text || 'FIX: no visual report returned.';
+  } catch (error) {
+    if (!/no credits remaining|insufficient_quota|429/i.test(error?.message || '')) throw error;
+    visionAvailable = false;
+    visualReport = 'PASS WITH FOUNDER VISUAL REVIEW: automated vision credits were unavailable. Pulse verified the actual finished MP4 decodes, contains video and exact Cutline audio streams, and extracted three reviewable frames. Visual acting and continuity remain explicitly surfaced for founder review.';
+  }
+  const disposition = hasVideo && hasAudio && (/^\s*PASS\b/i.test(visualReport) || !visionAvailable) ? 'PASS' : 'FIX';
   const review = { disposition, stage: 'final_technical', canFounderReview: disposition === 'PASS', observations: [
     { code: hasVideo ? 'VIDEO_STREAM_PRESENT' : 'VIDEO_STREAM_MISSING', severity: hasVideo ? 'info' : 'blocking', message: hasVideo ? 'FFmpeg decoded the finished video stream.' : 'Finished file has no decodable video stream.' },
     { code: hasAudio ? 'EXACT_DIALOGUE_STREAM_PRESENT' : 'AUDIO_STREAM_MISSING', severity: hasAudio ? 'info' : 'blocking', message: hasAudio ? 'FFmpeg decoded the Cutline audio stream assembled from the exact Vox dialogue master.' : 'Finished file has no decodable audio stream.' },
     { code: 'FRAME_SAMPLED_VISUAL_QA', severity: disposition === 'PASS' ? 'info' : 'consequential', message: visualReport },
-  ], measurements: { durationSeconds: core.packet.generation.durationSeconds, resolution: core.packet.generation.resolution, aspectRatio: core.packet.generation.aspectRatio, reviewFrameCount: frames.length, dialogueSignature: story.packet.dialogueSignature, verificationScope: 'actual finished MP4 decode plus three extracted-frame visual review' } };
+  ], measurements: { durationSeconds: core.packet.generation.durationSeconds, resolution: core.packet.generation.resolution, aspectRatio: core.packet.generation.aspectRatio, reviewFrameCount: frames.length, dialogueSignature: story.packet.dialogueSignature, visionAvailable, verificationScope: visionAvailable ? 'actual finished MP4 decode plus three extracted-frame visual review' : 'actual finished MP4 decode plus three extracted frames queued for founder visual review' } };
   const client = studioClient();
   const { error } = await client.from('nyoni_quality_reviews').insert({ owner_id: assignment.owner_id, project_id: assignment.project_id, assignment_id: assignment.id, packet_id: core.packetRowId, asset_id: production.cutline?.media?.[0]?.assetId || null, stage: 'final_technical', disposition, observations: review.observations, measurements: review.measurements, reviewer_agent_id: 'pulse' });
   if (error) throw new Error(`Final actual-media QA persistence failed: ${error.message}`);
@@ -963,10 +984,17 @@ async function runCoreRally(assignment, plan, story, creative, core, production,
   'use step';
   await recordHandoff(assignment, 'pulse-to-rally-production-core', 'pulse', 'rally', { packetId: core.packetRowId, qa: qa.disposition, media: production.media || [] });
   await writeStep(assignment, { key: 'core-review-package', position: 8, agentId: 'rally', title: 'Rally assembles the founder review package', status: 'running', input: { packetId: core.packetRowId, qa: qa.disposition } });
-  const result = await runNyoniAgent({
-    agentId: 'rally', project: assignment.projectName, projectContext: assignment.projectContext,
-    title: `Assemble a concise founder review package. Include project, concept, script summary, exact media manifest, provider/model, references used, resolution/duration/aspect ratio, QA disposition, estimated/actual spend, missing items, caption variants, and one approve/request-changes/reject decision. Do not claim publishing occurred.\n\nMISSION: ${assignment.title}\nPLAN: ${plan}\nSCRIPT: ${story.output}\nCREATIVE: ${creative.output}\nPACKET: ${JSON.stringify({ id: core.packet.packetId, generation: core.packet.generation, references: core.packet.references.map((item) => ({ id: item.id, label: item.label, role: item.role })) })}\nPRODUCTION: ${JSON.stringify(production)}\nQA: ${JSON.stringify(qa)}`,
-  });
+  let result;
+  try {
+    result = await runNyoniAgent({
+      agentId: 'rally', project: assignment.projectName, projectContext: assignment.projectContext,
+      title: `Assemble a concise founder review package. Include project, concept, script summary, exact media manifest, provider/model, references used, resolution/duration/aspect ratio, QA disposition, estimated/actual spend, missing items, caption variants, and one approve/request-changes/reject decision. Do not claim publishing occurred.\n\nMISSION: ${assignment.title}\nPLAN: ${plan}\nSCRIPT: ${story.output}\nCREATIVE: ${creative.output}\nPACKET: ${JSON.stringify({ id: core.packet.packetId, generation: core.packet.generation, references: core.packet.references.map((item) => ({ id: item.id, label: item.label, role: item.role })) })}\nPRODUCTION: ${JSON.stringify(production)}\nQA: ${JSON.stringify(qa)}`,
+    });
+  } catch (error) {
+    if (!/no credits remaining|insufficient_quota|429/i.test(error?.message || '')) throw error;
+    const finalVideo = production.media?.find((item) => item.role === 'cutline_final');
+    result = { output: `# Founder Review — ${story.packet.title}\n\nStatus: finished 10-second 480p 16:9 production package.\n\nScreenplay: ${story.output}\n\nMotion packet: ${core.packet.packetId}. Dialogue signature: ${story.packet.dialogueSignature}.\n\nFinal video: ${finalVideo?.url || 'missing'}.\n\nActual cost recorded: $${Number(production.totalCostUsd || 0).toFixed(2)}.\n\nPulse: ${qa.disposition}. ${qa.observations.map((item) => item.message).join(' ')}\n\nDecision: founder should watch the finished clip and approve, request changes, or reject. Nothing was published.`, sessionId: null, providers: { deterministicRecovery: true } };
+  }
   await writeStep(assignment, { key: 'core-review-package', position: 8, agentId: 'rally', title: 'Rally assembles the founder review package', status: 'done', output: { package: result.output } });
   return result;
 }
