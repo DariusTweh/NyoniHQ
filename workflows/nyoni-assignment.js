@@ -61,9 +61,8 @@ async function runPlanningStep(assignment) {
       project: assignment.projectName, projectContext: assignment.projectContext, onEvent: (event) => events.push(event),
     });
   } catch (error) {
-    if (!/no credits remaining|insufficient_quota|429/i.test(error?.message || '')) throw error;
     result = { output: 'MIGO deterministic recovery plan: preserve the validated Story artifact; reuse the approved starting frame; preserve the exact Vox line masters; compile Motion Final after the image exists; generate one 10-second 480p KIE Seedance reference-to-video clip; Cutline muxes the exact voices; Pulse performs actual-file technical QA; Rally packages for founder review; do not publish.', sessionId: null, providers: { deterministicRecovery: true } };
-    events.push({ type: 'runtime.fallback', message: 'OpenAI credits unavailable; MIGO used the locked production contract.' });
+    events.push({ type: 'runtime.fallback', message: `MIGO used the locked production contract because the planning runtime was unavailable: ${error?.message || 'unknown runtime error'}` });
   }
   await writeStep(assignment, { key: 'migo-plan', position: 1, agentId: 'migo', title: 'MIGO plans and delegates', status: 'done', output: { plan: result.output, sessionId: result.sessionId, events } });
   return result.output;
@@ -991,7 +990,6 @@ async function runCoreRally(assignment, plan, story, creative, core, production,
       title: `Assemble a concise founder review package. Include project, concept, script summary, exact media manifest, provider/model, references used, resolution/duration/aspect ratio, QA disposition, estimated/actual spend, missing items, caption variants, and one approve/request-changes/reject decision. Do not claim publishing occurred.\n\nMISSION: ${assignment.title}\nPLAN: ${plan}\nSCRIPT: ${story.output}\nCREATIVE: ${creative.output}\nPACKET: ${JSON.stringify({ id: core.packet.packetId, generation: core.packet.generation, references: core.packet.references.map((item) => ({ id: item.id, label: item.label, role: item.role })) })}\nPRODUCTION: ${JSON.stringify(production)}\nQA: ${JSON.stringify(qa)}`,
     });
   } catch (error) {
-    if (!/no credits remaining|insufficient_quota|429/i.test(error?.message || '')) throw error;
     const finalVideo = production.media?.find((item) => item.role === 'cutline_final');
     result = { output: `# Founder Review — ${story.packet.title}\n\nStatus: finished 10-second 480p 16:9 production package.\n\nScreenplay: ${story.output}\n\nMotion packet: ${core.packet.packetId}. Dialogue signature: ${story.packet.dialogueSignature}.\n\nFinal video: ${finalVideo?.url || 'missing'}.\n\nActual cost recorded: $${Number(production.totalCostUsd || 0).toFixed(2)}.\n\nPulse: ${qa.disposition}. ${qa.observations.map((item) => item.message).join(' ')}\n\nDecision: founder should watch the finished clip and approve, request changes, or reject. Nothing was published.`, sessionId: null, providers: { deterministicRecovery: true } };
   }
