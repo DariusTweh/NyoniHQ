@@ -615,6 +615,7 @@ async function runCoreStory(assignment, plan, workflowKind, research = null) {
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const requested = assignment.request?.production || {};
   const durationSeconds = Math.min(10, Number(requested.durationSeconds || 10));
+  const boundCharacterIds = Object.keys(requested.voiceBindings || {});
   let findings = [];
   let validated = null;
   let responseId = null;
@@ -622,13 +623,14 @@ async function runCoreStory(assignment, plan, workflowKind, research = null) {
     const response = await openai.responses.create({
       model: process.env.NYONI_STORY_MODEL || 'gpt-5.5',
       text: { format: { type: 'json_schema', name: 'nyoni_story_script_packet', strict: true, schema: storyJsonSchema } },
-      input: `You are Story, Nyoni HQ's screenwriter. Write an ORIGINAL, production-feasible ${durationSeconds}-second screenplay packet. It must have exactly two original characters, a clear visual setup, a natural misunderstanding, a clean punchline, realistic pauses and listener reactions, and dialogue that fits the timing. Each line must explicitly name a speaker ID and a different recipient ID. This test takes place in a police interrogation room and uses cinematic stylized 3D. Do not use or reference Palava 231, any existing Nyoni canon, or protected characters. Do not write camera or provider directions; Motion owns directing. Project ID must be ${assignment.project_id}; assignment ID must be ${assignment.id}; durationSeconds must be ${durationSeconds}.\n\nMISSION:\n${assignment.title}\n\nMIGO PLAN:\n${plan}\n\nPROJECT CONTEXT (facts only, no canon reuse):\n${assignment.projectContext || 'None'}\n\nRESEARCH:\n${research || 'None required.'}\n\n${attempt === 2 ? `REWRITE REQUIRED. Correct these exact quality findings without changing the brief: ${JSON.stringify(findings)}` : ''}`,
+      input: `You are Story, Nyoni HQ's screenwriter. Write an ORIGINAL, production-feasible ${durationSeconds}-second screenplay packet. It must have exactly two original characters, a clear visual setup, a natural misunderstanding, a clean punchline, realistic pauses and listener reactions, and dialogue that fits the timing. Each line must explicitly name a speaker ID and a different recipient ID. ${boundCharacterIds.length ? `The two character IDs MUST be exactly ${boundCharacterIds.join(' and ')} because Vox already has explicit voice bindings for those stable IDs.` : ''} This test takes place in a police interrogation room and uses cinematic stylized 3D. Do not use or reference Palava 231, any existing Nyoni canon, or protected characters. Do not write camera or provider directions; Motion owns directing. Project ID must be ${assignment.project_id}; assignment ID must be ${assignment.id}; durationSeconds must be ${durationSeconds}.\n\nMISSION:\n${assignment.title}\n\nMIGO PLAN:\n${plan}\n\nPROJECT CONTEXT (facts only, no canon reuse):\n${assignment.projectContext || 'None'}\n\nRESEARCH:\n${research || 'None required.'}\n\n${attempt === 2 ? `REWRITE REQUIRED. Correct these exact quality findings without changing the brief: ${JSON.stringify(findings)}` : ''}`,
     });
     responseId = response.id;
     const parsed = JSON.parse(response.output_text || '{}');
     const review = validateStoryScriptPacket(parsed);
-    findings = review.findings;
-    if (review.disposition === 'PASS') { validated = review.packet; break; }
+    findings = [...review.findings];
+    if (boundCharacterIds.length && JSON.stringify([...new Set(review.packet.characters.map((item) => item.id))].sort()) !== JSON.stringify([...boundCharacterIds].sort())) findings.push({ code: 'VOICE_BINDING_CHARACTER_IDS_MISMATCH', severity: 'blocking', requiredCharacterIds: boundCharacterIds });
+    if (findings.length === 0) { validated = review.packet; break; }
   }
   if (!validated) throw new Error(`Story quality gate failed after one bounded rewrite: ${JSON.stringify(findings)}`);
   const screenplay = storyPacketToScreenplay(validated);
