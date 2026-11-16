@@ -777,7 +777,11 @@ async function buildCorePacket(assignment, story, creative, preliminary, sound, 
     ...(item.speakerId ? { characterId: item.speakerId } : {}), preservation: 'exact_master',
   }));
   const referenceAssetIds = [...new Set([...(requested.referenceAssetIds || []), ...(visualReference?.media || []).map((item) => item.assetId).filter(Boolean)])];
+  const packetClient = studioClient();
+  const { data: latestPacket } = await packetClient.from('nyoni_production_packets').select('packet_version').eq('assignment_id', assignment.id).order('packet_version', { ascending: false }).limit(1).maybeSingle();
+  const packetVersion = Number(latestPacket?.packet_version || 0) + 1;
   let packet = await resolveProductionContext(assignment, {
+    packetVersion,
     requiresSeries: founderDirected && assignment.request?.production?.allowExistingCanon === true,
     seriesDocumentId: requested.seriesDocumentId, productionDocumentId: requested.productionDocumentId,
     episodeId: requested.episodeId, sceneId: requested.sceneId, shotId: requested.shotId,
