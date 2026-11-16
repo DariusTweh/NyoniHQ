@@ -10,7 +10,8 @@ import { evaluateProductionQuality } from '../server/quality-control.js';
 import { estimateProviderCost } from '../server/provider-adapters.js';
 import { storyJsonSchema, storyPacketToScreenplay, validateStoryScriptPacket } from '../server/story-engine.js';
 import { classifyWorkflowIntent, mergeRequiredAgents } from '../server/workflow-intent.js';
-import { assembleDialogueCut, assembleDialogueReferenceMaster } from '../server/cutline.js';
+import { inspectFinishedMedia } from '../server/media-inspection.js';
+import { assembleDialogueReferenceMaster } from '../server/vox-master.js';
 
 async function getAssignment(assignmentId) {
   'use step';
@@ -61,7 +62,7 @@ async function runPlanningStep(assignment) {
       project: assignment.projectName, projectContext: assignment.projectContext, onEvent: (event) => events.push(event),
     });
   } catch (error) {
-    result = { output: 'MIGO deterministic recovery plan: preserve the validated Story artifact; reuse the approved starting frame; preserve the exact Vox line masters; compile Motion Final after the image exists; generate one 10-second 480p KIE Seedance reference-to-video clip; Cutline muxes the exact voices; Pulse performs actual-file technical QA; Rally packages for founder review; do not publish.', sessionId: null, providers: { deterministicRecovery: true } };
+    result = { output: 'MIGO deterministic recovery plan: preserve the validated Story artifact; reuse the approved starting frame; preserve the exact Vox master; compile Motion Final after the image exists; generate one 10-second 480p KIE Seedance reference-to-video clip with that audio reference; Pulse performs actual-file technical QA; Rally packages for founder review; do not publish.', sessionId: null, providers: { deterministicRecovery: true } };
     events.push({ type: 'runtime.fallback', message: `MIGO used the locked production contract because the planning runtime was unavailable: ${error?.message || 'unknown runtime error'}` });
   }
   await writeStep(assignment, { key: 'migo-plan', position: 1, agentId: 'migo', title: 'MIGO plans and delegates', status: 'done', output: { plan: result.output, sessionId: result.sessionId, events } });
@@ -793,7 +794,7 @@ async function buildCorePacket(assignment, story, creative, preliminary, sound, 
       { id: 'review-package', type: 'review_package', required: true, playable: false, label: 'Founder review package' },
     ],
     directingPhase: 'final', frameRateIntent: requested.frameRateIntent || '24fps cinematic motion',
-    audioReferences, audioStrategy: { mode: audioReferences.length ? 'exact_post_mix' : generation.generateAudio ? 'provider_generated' : 'none', exactMastersRequired: Boolean(audioReferences.length), instructions: [sound.output, 'Preserve the exact line order, words, speaker identities, listener targets and conversational pauses in the Vox master. Cutline will use this exact master in the final export.'] },
+    audioReferences, audioStrategy: { mode: audioReferences.length ? 'exact_generation_reference' : generation.generateAudio ? 'provider_generated' : 'none', exactMastersRequired: Boolean(audioReferences.length), instructions: [sound.output, 'Use the Vox reference master directly during generation. Preserve its exact line order, words, speaker identities, listener targets and conversational pauses in the generated clip. No post-generation Cutline stage is scheduled.'] },
     continuityRules: story.packet.continuityRules,
     stageGeography: requested.stageGeography || { location: story.packet.location, characterPositions: story.packet.characters.map((item, index) => ({ characterId: item.id, side: index === 0 ? 'screen-left' : 'screen-right' })) },
     eyelines: requested.eyelines || story.packet.dialogue.map((line) => ({ speakerId: line.speakerId, listenerId: line.recipientId, rule: `${line.speakerId} looks to ${line.recipientId}; ${line.recipientId} visibly listens and reacts.` })),
@@ -897,26 +898,17 @@ async function runCoreQa(assignment, core, production) {
   return review;
 }
 
-async function runCoreCutline(assignment, core, production, vox) {
-  'use step';
-  const sourceVideo = production.media?.find((item) => item.type === 'video' && item.provider !== 'cutline');
-  const dialogueMedia = vox.audio?.media || [];
-  await recordHandoff(assignment, 'pulse-to-cutline-dialogue-edit', 'pulse', 'cutline', { packetId: core.packetRowId, sourceAssetId: sourceVideo?.assetId, dialogueAssetIds: dialogueMedia.map((item) => item.assetId), dialogueSignature: core.packet.script.dialogue?.length ? vox.audio?.media?.[0]?.dialogueSignature : null });
-  await writeStep(assignment, { key: 'core-cutline', position: 8, agentId: 'cutline', title: 'Cutline assembles the exact Vox dialogue master with the generated video', status: 'running', input: { sourceAssetId: sourceVideo?.assetId, dialogueAssetIds: dialogueMedia.map((item) => item.assetId), durationSeconds: core.packet.generation.durationSeconds } });
-  const cutline = await assembleDialogueCut(assignment, { video: sourceVideo, dialogueMedia, durationSeconds: core.packet.generation.durationSeconds });
-  await writeStep(assignment, { key: 'core-cutline', position: 8, agentId: 'cutline', title: 'Cutline assembles the exact Vox dialogue master with the generated video', status: 'done', output: { media: cutline.media, reviewFrames: cutline.reviewFrames, sourcePreserved: true, costUsd: 0 } });
-  return { ...production, media: [...(production.media || []).map((item) => ({ ...item, role: item.role || 'source_generation' })), ...cutline.media], cutline, totalCostUsd: Number(production.totalCostUsd || 0) };
-}
-
 async function runCoreFinalQa(assignment, core, production, story) {
   'use step';
-  await recordHandoff(assignment, 'cutline-to-pulse-final-qa', 'cutline', 'pulse', { packetId: core.packetRowId, finalAssetId: production.cutline?.media?.[0]?.assetId, reviewFrames: production.cutline?.reviewFrames || [] });
-  await writeStep(assignment, { key: 'core-final-qa', position: 9, agentId: 'pulse', title: 'Pulse evaluates the actual finished media', status: 'running', input: { finalAssetId: production.cutline?.media?.[0]?.assetId, reviewFrameCount: production.cutline?.reviewFrames?.length || 0 } });
-  const probe = production.cutline?.probe || '';
+  const finalVideo = production.media?.find((item) => item.type === 'video' && item.url);
+  await recordHandoff(assignment, `${production.agentId}-to-pulse-final-qa`, production.agentId, 'pulse', { packetId: core.packetRowId, finalAssetId: finalVideo?.assetId });
+  await writeStep(assignment, { key: 'core-final-qa', position: 7, agentId: 'pulse', title: 'Pulse evaluates the actual generated media', status: 'running', input: { finalAssetId: finalVideo?.assetId } });
+  const inspection = await inspectFinishedMedia(assignment, { video: finalVideo, durationSeconds: core.packet.generation.durationSeconds });
+  const probe = inspection.probe || '';
   const hasVideo = /Video:/i.test(probe);
   const hasAudio = /Audio:/i.test(probe);
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const frames = production.cutline?.reviewFrames || [];
+  const frames = inspection.reviewFrames || [];
   let visualReport; let visionAvailable = true;
   try {
     const response = await openai.responses.create({
@@ -930,18 +922,18 @@ async function runCoreFinalQa(assignment, core, production, story) {
   } catch (error) {
     if (!/no credits remaining|insufficient_quota|429/i.test(error?.message || '')) throw error;
     visionAvailable = false;
-    visualReport = 'PASS WITH FOUNDER VISUAL REVIEW: automated vision credits were unavailable. Pulse verified the actual finished MP4 decodes, contains video and exact Cutline audio streams, and extracted three reviewable frames. Visual acting and continuity remain explicitly surfaced for founder review.';
+    visualReport = 'PASS WITH FOUNDER VISUAL REVIEW: automated vision credits were unavailable. Pulse verified the actual generated MP4 decodes, contains video and audio streams, and extracted three reviewable frames. Visual acting and continuity remain explicitly surfaced for founder review.';
   }
   const disposition = hasVideo && hasAudio && (/^\s*PASS\b/i.test(visualReport) || !visionAvailable) ? 'PASS' : 'FIX';
   const review = { disposition, stage: 'final_technical', canFounderReview: disposition === 'PASS', observations: [
     { code: hasVideo ? 'VIDEO_STREAM_PRESENT' : 'VIDEO_STREAM_MISSING', severity: hasVideo ? 'info' : 'blocking', message: hasVideo ? 'FFmpeg decoded the finished video stream.' : 'Finished file has no decodable video stream.' },
-    { code: hasAudio ? 'EXACT_DIALOGUE_STREAM_PRESENT' : 'AUDIO_STREAM_MISSING', severity: hasAudio ? 'info' : 'blocking', message: hasAudio ? 'FFmpeg decoded the Cutline audio stream assembled from the exact Vox dialogue master.' : 'Finished file has no decodable audio stream.' },
+    { code: hasAudio ? 'GENERATED_AUDIO_STREAM_PRESENT' : 'AUDIO_STREAM_MISSING', severity: hasAudio ? 'info' : 'blocking', message: hasAudio ? 'FFmpeg decoded the audio stream generated by KIE from the Vox reference master.' : 'Generated file has no decodable audio stream.' },
     { code: 'FRAME_SAMPLED_VISUAL_QA', severity: disposition === 'PASS' ? 'info' : 'consequential', message: visualReport },
   ], measurements: { durationSeconds: core.packet.generation.durationSeconds, resolution: core.packet.generation.resolution, aspectRatio: core.packet.generation.aspectRatio, reviewFrameCount: frames.length, dialogueSignature: story.packet.dialogueSignature, visionAvailable, verificationScope: visionAvailable ? 'actual finished MP4 decode plus three extracted-frame visual review' : 'actual finished MP4 decode plus three extracted frames queued for founder visual review' } };
   const client = studioClient();
-  const { error } = await client.from('nyoni_quality_reviews').insert({ owner_id: assignment.owner_id, project_id: assignment.project_id, assignment_id: assignment.id, packet_id: core.packetRowId, asset_id: production.cutline?.media?.[0]?.assetId || null, stage: 'final_technical', disposition, observations: review.observations, measurements: review.measurements, reviewer_agent_id: 'pulse' });
+  const { error } = await client.from('nyoni_quality_reviews').insert({ owner_id: assignment.owner_id, project_id: assignment.project_id, assignment_id: assignment.id, packet_id: core.packetRowId, asset_id: finalVideo?.assetId || null, stage: 'final_technical', disposition, observations: review.observations, measurements: review.measurements, reviewer_agent_id: 'pulse' });
   if (error) throw new Error(`Final actual-media QA persistence failed: ${error.message}`);
-  await writeStep(assignment, { key: 'core-final-qa', position: 9, agentId: 'pulse', title: 'Pulse evaluates the actual finished media', status: disposition === 'PASS' ? 'done' : 'failed', output: review, error: disposition === 'PASS' ? null : visualReport });
+  await writeStep(assignment, { key: 'core-final-qa', position: 7, agentId: 'pulse', title: 'Pulse evaluates the actual generated media', status: disposition === 'PASS' ? 'done' : 'failed', output: { ...review, reviewFrames: frames }, error: disposition === 'PASS' ? null : visualReport });
   return review;
 }
 
@@ -994,7 +986,7 @@ async function runCoreRally(assignment, plan, story, creative, core, production,
       title: `Assemble a concise founder review package. Include project, concept, script summary, exact media manifest, provider/model, references used, resolution/duration/aspect ratio, QA disposition, estimated/actual spend, missing items, caption variants, and one approve/request-changes/reject decision. Do not claim publishing occurred.\n\nMISSION: ${assignment.title}\nPLAN: ${plan}\nSCRIPT: ${story.output}\nCREATIVE: ${creative.output}\nPACKET: ${JSON.stringify({ id: core.packet.packetId, generation: core.packet.generation, references: core.packet.references.map((item) => ({ id: item.id, label: item.label, role: item.role })) })}\nPRODUCTION: ${JSON.stringify(production)}\nQA: ${JSON.stringify(qa)}`,
     });
   } catch (error) {
-    const finalVideo = production.media?.find((item) => item.role === 'cutline_final');
+    const finalVideo = production.media?.find((item) => item.type === 'video' && item.url);
     result = { output: `# Founder Review — ${story.packet.title}\n\nStatus: finished 10-second 480p 16:9 production package.\n\nScreenplay: ${story.output}\n\nMotion packet: ${core.packet.packetId}. Dialogue signature: ${story.packet.dialogueSignature}.\n\nFinal video: ${finalVideo?.url || 'missing'}.\n\nActual cost recorded: $${Number(production.totalCostUsd || 0).toFixed(2)}.\n\nPulse: ${qa.disposition}. ${qa.observations.map((item) => item.message).join(' ')}\n\nDecision: founder should watch the finished clip and approve, request changes, or reject. Nothing was published.`, sessionId: null, providers: { deterministicRecovery: true } };
   }
   await writeStep(assignment, { key: 'core-review-package', position: 8, agentId: 'rally', title: 'Rally assembles the founder review package', status: 'done', output: { package: result.output } });
@@ -1019,7 +1011,7 @@ async function finalizeCoreProduction(assignment, stages) {
   const content = { plan: stages.plan, research: stages.research || null, screenplay: stages.story.output, storyScriptPacket: stages.story.packet, storyArtifactId: stages.story.artifactId, creative: stages.creative.output, motionPreliminary: stages.preliminary?.output || null, vox: stages.sound?.audio || null, motionPacket: stages.core.packet, deliverable: stages.rally.output, media, qa: stages.qa, production: stages.production, missingItems };
   const { error: versionError } = await client.from('nyoni_artifact_versions').insert({ artifact_id: artifact.id, owner_id: assignment.owner_id, version: 1, content, created_by_agent_id: 'rally' });
   if (versionError) throw new Error(`Production review version failed: ${versionError.message}`);
-  const result = { ...content, artifactId: artifact.id, totalCostUsd: stages.production.totalCostUsd || 0, providers: { studio: stages.production.provider, model: stages.production.model }, collaboration: ['migo', ...(stages.research ? ['scout'] : []), 'story', 'creative', 'lumina', 'motion', 'vox', stages.production.agentId, 'pulse', 'cutline', 'pulse', 'rally'] };
+  const result = { ...content, artifactId: artifact.id, totalCostUsd: stages.production.totalCostUsd || 0, providers: { studio: stages.production.provider, model: stages.production.model }, collaboration: ['migo', ...(stages.research ? ['scout'] : []), 'story', 'creative', 'lumina', 'motion', 'vox', stages.production.agentId, 'pulse', 'rally'] };
   if (ready) {
     const { error: approvalError } = await client.from('nyoni_approval_requests').insert({
       assignment_id: assignment.id, owner_id: assignment.owner_id, action_type: 'approve_content_package',
@@ -1050,10 +1042,9 @@ async function runProductionCoreWorkflow(assignment, plan, workflowKind) {
   const videoProduction = await runCoreGeneration(assignment, core);
   const generated = { ...videoProduction, media: [...(visualReference.media || []), ...(sound.audio?.media || []), ...(videoProduction.media || [])], totalCostUsd: Number(visualReference.totalCostUsd || 0) + Number(sound.audio?.totalCostUsd || 0) + Number(videoProduction.totalCostUsd || 0) };
   await runCoreQa(assignment, core, generated);
-  const production = await runCoreCutline(assignment, core, generated, sound);
-  const qa = await runCoreFinalQa(assignment, core, production, story);
-  const rally = await runCoreRally(assignment, plan, story, creative, core, production, qa);
-  return finalizeCoreProduction(assignment, { plan, research, story, creative, preliminary, sound, core, production, qa, rally });
+  const qa = await runCoreFinalQa(assignment, core, generated, story);
+  const rally = await runCoreRally(assignment, plan, story, creative, core, generated, qa);
+  return finalizeCoreProduction(assignment, { plan, research, story, creative, preliminary, sound, core, production: generated, qa, rally });
 }
 
 async function finalizeAssignment(assignment, plan, deliverable, production = null) {
