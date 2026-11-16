@@ -19,11 +19,26 @@ function packet(overrides = {}) {
 test('Motion compiles a cinematic prompt with reference assignments, timing, physics and voice locks', () => {
   const value = packet();
   value.motionPrompt = buildMotionProductionPrompt(value);
-  assert.match(value.motionPrompt, /<Picture 1>/);
-  assert.match(value.motionPrompt, /\[ACTION TIMING\]/);
-  assert.match(value.motionPrompt, /PHYSICS/);
+  assert.match(value.motionPrompt, /@Image 1/);
+  for (const section of ['A — GENERATION GOAL', 'B — REFERENCE MANIFEST', 'C — CHARACTER IDENTITY LOCKS', 'D — ART STYLE AND ENVIRONMENT', 'E — STAGE GEOGRAPHY AND CHARACTER BLOCKING', 'F — EYELINES AND DIALOGUE RECIPIENTS', 'G — CAMERA DIRECTION', 'H — CHARACTER ACTING AND EMOTIONAL PERFORMANCE', 'I — AUDIO AND DIALOGUE', 'J — SECOND-BY-SECOND ACTION AND PACING', 'K — PHYSICS AND PHYSICAL INTERACTION', 'L — END-STATE CONTINUITY', 'M — NEGATIVE CONSTRAINTS', 'N — TECHNICAL GENERATION SETTINGS']) {
+    assert.match(value.motionPrompt, new RegExp(`\\[${section}\\]`));
+  }
   assert.match(value.motionPrompt, /Never auto-select a substitute voice/);
   assert.match(value.motionPrompt, /Avoid constantly centered tracking/);
+});
+
+test('KIE sends the same ordered audio masters named in the Motion packet', () => {
+  const value = packet({
+    generation: { ...packet().generation, mode: 'reference-to-video', generateAudio: true },
+    audioReferences: [
+      { id: 'sonora-1', url: 'https://assets.example.test/score.mp3', role: 'music', label: 'Sonora score', durationSeconds: 10, preservation: 'reference_guidance' },
+    ],
+    audioStrategy: { mode: 'reference_guided', instructions: ['Follow the approved Sonora timing map.'] },
+  });
+  value.motionPrompt = buildMotionProductionPrompt(value);
+  const request = buildKieSeedanceRequest(value);
+  assert.match(value.motionPrompt, /@Audio 1 — Sonora score/);
+  assert.deepEqual(request.input.reference_audio_urls, ['https://assets.example.test/score.mp3']);
 });
 
 test('KIE reference-to-video preserves multiple ordered images in the actual provider payload', () => {

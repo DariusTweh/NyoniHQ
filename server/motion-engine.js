@@ -2,7 +2,7 @@ function lines(values) { return (Array.isArray(values) ? values : []).filter(Boo
 
 function referenceInstructions(references) {
   return references.map((reference, index) => {
-    const token = `<Picture ${index + 1}>`;
+    const token = `@Image ${index + 1}`;
     const preserve = reference.role.startsWith('character_')
       ? 'identity, face, body proportions, skin tone, hair and approved wardrobe only'
       : reference.role === 'location_master' || reference.role === 'background_plate'
@@ -12,6 +12,10 @@ function referenceInstructions(references) {
           : 'the explicitly assigned visual dimension only';
     return `${token} — ${reference.label}: preserve ${preserve}. Do not import unrelated action, wardrobe, characters, text or story facts from this image.`;
   });
+}
+
+function audioReferenceInstructions(references = []) {
+  return references.map((reference, index) => `@Audio ${index + 1} — ${reference.label} [${reference.id}]: use as ${reference.role}; measured duration ${reference.durationSeconds ?? 'unverified'}s; preservation ${reference.preservation}. Do not reassign this audio to another character or inherit unrelated sound.`);
 }
 
 function timedBeats(packet) {
@@ -37,6 +41,8 @@ function timedBeats(packet) {
 
 export function buildMotionProductionPrompt(packet, direction = {}) {
   const refs = referenceInstructions(packet.references);
+  const audioRefs = audioReferenceInstructions(packet.audioReferences);
+  const audioStrategy = packet.audioStrategy || { mode: packet.generation.generateAudio ? 'provider_generated' : 'none', instructions: [] };
   const characters = packet.characters.map((character) => `${character.name} [${character.id}]${character.voiceDirection ? ` — performance/voice: ${character.voiceDirection}` : ''}`);
   const style = [
     ...lines(direction.style),
@@ -53,21 +59,24 @@ export function buildMotionProductionPrompt(packet, direction = {}) {
       ? 'Preserve approved Liberian dialogue, cadence and performance direction exactly; do not neutralize or replace it.'
       : '';
   return [
-    '[GENERATION GOAL]',
+    '[A — GENERATION GOAL]',
     direction.goal || packet.script.text || 'Produce the requested shot as one coherent cinematic event.',
-    '', '[LOCKED IDENTITIES / REFERENCES]', ...(refs.length ? refs : ['No external visual references are assigned; do not invent recurring-character identity.']),
-    '', '[CHARACTERS / PERFORMANCE]', ...(characters.length ? characters : ['No named recurring character is assigned.']),
+    '', '[B — REFERENCE MANIFEST]', ...(refs.length ? refs : ['No external visual references are assigned; do not invent recurring-character identity.']), ...audioRefs,
+    '', '[C — CHARACTER IDENTITY LOCKS]', ...(characters.length ? characters : ['No named recurring character is assigned.']),
     ...(projectRule ? [projectRule] : []),
-    '', '[SCENE GEOGRAPHY / BLOCKING]', ...(lines(direction.blocking).length ? lines(direction.blocking) : ['Keep every subject’s starting side, depth, eyeline, path and prop contact explicit and spatially consistent.']),
-    '', '[ACTION TIMING]', ...timedBeats(packet),
-    '', '[CAMERA / OPTICS]', ...camera,
-    '', '[LIGHT / ENVIRONMENT / MATERIALS]', ...(style.length ? style : ['Motivated practical light, stable exposure and shadow direction, coherent reflections, tactile materials and readable subject separation.']),
-    '', '[PHYSICS / CONTACT / FOLLOW-THROUGH]', ...(lines(direction.physics).length ? lines(direction.physics) : ['Believable anatomy, weight, momentum, collisions, cloth, object permanence, hand contact and reaction timing.']),
-    '', '[SOUND / DIALOGUE POLICY]', ...packet.voicePolicy.instructions, `Voice mode: ${packet.voicePolicy.mode}. Never auto-select a substitute voice.`, ...(lines(direction.sound).length ? lines(direction.sound) : ['Synchronize only authorized dialogue and visible production sound; preserve room tone and material contact.']),
-    '', '[CONTINUITY]', ...packet.continuityRules,
-    '', '[NEGATIVE / FAILURE PREVENTION]',
-    'No identity drift, face changes, anatomy errors, extra limbs, warped hands, duplicate subjects, disappearing props, object morphing, geography flips, lighting jumps, random cuts, camera teleportation, flicker, subtitles, logos or watermarks.',
-    `Technical: ${packet.generation.aspectRatio}, ${packet.generation.resolution}, ${packet.generation.durationSeconds}s, ${packet.generation.mode}.`,
+    '', '[D — ART STYLE AND ENVIRONMENT]', ...(style.length ? style : ['Motivated practical light, stable exposure and shadow direction, coherent reflections, tactile materials and readable subject separation.']),
+    '', '[E — STAGE GEOGRAPHY AND CHARACTER BLOCKING]', ...(lines(direction.blocking).length ? lines(direction.blocking) : ['Keep every subject’s starting side, depth, eyeline, path and prop contact explicit and spatially consistent.']), JSON.stringify(packet.stageGeography || {}),
+    '', '[F — EYELINES AND DIALOGUE RECIPIENTS]', ...(packet.eyelines?.length ? packet.eyelines.map((item) => typeof item === 'string' ? item : JSON.stringify(item)) : ['Maintain intentional speaker-to-listener eyelines. No direct lens contact unless the shot explicitly authorizes it. Preserve the 180-degree action axis.']),
+    '', '[G — CAMERA DIRECTION]', ...camera,
+    '', '[H — CHARACTER ACTING AND EMOTIONAL PERFORMANCE]', ...(lines(direction.performance).length ? lines(direction.performance) : ['Specify visible emotional progression through gaze, breath, brows, jaw, posture, restraint, gesture and listener reaction; avoid mannequin performance.']),
+    '', '[I — AUDIO AND DIALOGUE]', ...packet.voicePolicy.instructions, `Voice mode: ${packet.voicePolicy.mode}. Never auto-select a substitute voice.`, ...audioStrategy.instructions, ...(lines(direction.sound).length ? lines(direction.sound) : ['Synchronize only authorized dialogue and visible production sound; preserve room tone and material contact.']),
+    '', '[J — SECOND-BY-SECOND ACTION AND PACING]', ...(packet.actionTimeline?.length ? packet.actionTimeline.map((item) => typeof item === 'string' ? item : JSON.stringify(item)) : timedBeats(packet)),
+    '', '[K — PHYSICS AND PHYSICAL INTERACTION]', ...(lines(direction.physics).length ? lines(direction.physics) : ['Believable anatomy, weight transfer, foot contact, acceleration, inertia, gravity, collisions, cloth, object permanence, grasping, follow-through and recovery.']),
+    '', '[L — END-STATE CONTINUITY]', ...packet.continuityRules, JSON.stringify(packet.endState || {}),
+    '', '[M — NEGATIVE CONSTRAINTS]',
+    ...(packet.negativeConstraints?.length ? packet.negativeConstraints : ['No identity drift, wrong-person dialogue, accidental direct-camera gaze, frozen listener expressions, anatomy errors, extra limbs, warped hands, duplicate subjects, disappearing props, object morphing, geography flips, action-axis violations, floating feet, hand/object intersections, lighting jumps, random cuts, camera teleportation, flicker, subtitles, logos or watermarks.']),
+    '', '[N — TECHNICAL GENERATION SETTINGS]',
+    `Provider/model: ${packet.generation.provider}/${packet.generation.model}. Mode: ${packet.generation.mode}. Output: ${packet.generation.aspectRatio}, ${packet.generation.resolution}, ${packet.generation.durationSeconds}s. Frame-rate intent: ${packet.frameRateIntent || '24fps cinematic motion'}. Audio: ${audioStrategy.mode}. Estimated cost: $${Number(packet.budget?.estimatedUsd || 0).toFixed(2)}; authorized limit: $${Number(packet.budget?.approvedLimitUsd || 0).toFixed(2)}.`,
   ].filter((line) => line !== undefined).join('\n').trim();
 }
 

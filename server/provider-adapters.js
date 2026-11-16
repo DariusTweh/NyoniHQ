@@ -41,6 +41,7 @@ export function buildKieSeedanceRequest(packet, { referenceVideoUrls = [], refer
   validateDuration(durationSeconds, 4, 30, 'KIE Seedance 2.5');
   if (!['480p', '720p', '1080p'].includes(resolution)) throw new ProviderCompatibilityError(`KIE Seedance 2.5 does not support ${resolution}.`, { supported: ['480p','720p','1080p'] });
   const imageUrls = uniqueUrls(packet.references);
+  referenceAudioUrls = [...new Set([...referenceAudioUrls, ...(packet.audioReferences || []).map((item) => item.url).filter(Boolean)])];
   const base = { prompt: packet.motionPrompt, generate_audio: generateAudio, return_last_frame: returnLastFrame, resolution, aspect_ratio: aspectRatio, duration: durationSeconds, output_format: 'mp4', nsfw_checker: true };
   if (mode === 'text-to-video') {
     if (imageUrls.length || referenceVideoUrls.length || referenceAudioUrls.length) throw new ProviderCompatibilityError('Text-to-video cannot silently discard assigned references. Choose reference-to-video or remove the references.', { imageReferences: imageUrls.length });

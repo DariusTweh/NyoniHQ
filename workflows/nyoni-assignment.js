@@ -7,6 +7,7 @@ import { isMediaAgent, persistStudioGeneration, pollStudioGeneration, submitPris
 import { resolveProductionContext, persistProductionPacket } from '../server/production-context.js';
 import { buildMotionProductionPrompt } from '../server/motion-engine.js';
 import { evaluateProductionQuality } from '../server/quality-control.js';
+import { estimateProviderCost } from '../server/provider-adapters.js';
 
 async function getAssignment(assignmentId) {
   'use step';
@@ -633,22 +634,39 @@ async function runCoreCreative(assignment, plan, story, workflowKind) {
   return result;
 }
 
-async function runCoreSound(assignment, plan, story, creative) {
+async function runCoreMotionPreliminary(assignment, plan, story, creative) {
   'use step';
-  await recordHandoff(assignment, 'creative-to-sonora-production-core', 'creative', 'sonora', { script: story.output, creative: creative.output });
-  await writeStep(assignment, { key: 'production-sound-direction', position: 4, agentId: 'sonora', title: 'Sonora designs synchronized sound direction', status: 'running', input: { script: story.output, kieEmbeddedAudio: true } });
+  await recordHandoff(assignment, 'creative-to-motion-preliminary', 'creative', 'motion', { script: story.output, creative: creative.output });
+  await writeStep(assignment, { key: 'motion-preliminary', position: 4, agentId: 'motion', title: 'Motion Preliminary designs blocking and audio requirements', status: 'running', input: { script: story.output } });
   const result = await runNyoniAgent({
-    agentId: 'sonora', project: assignment.projectName, projectContext: assignment.projectContext,
-    title: `Design a precise sound plan for this short video. Specify time-coded ambience, Foley, impacts, transitions, musical texture, dynamics, and silence. Keep dialogue out unless it is explicitly present in the script. This sound plan will be embedded in the KIE Seedance prompt; do not request a separate Suno, WaveSpeed, or ElevenLabs generation.\n\nMISSION: ${assignment.title}\nPLAN: ${plan}\nSCRIPT: ${story.output}\nVISUAL DIRECTION: ${creative.output}`,
+    agentId: 'motion', project: assignment.projectName, projectContext: assignment.projectContext,
+    title: `Create the PRELIMINARY director plan for one provider-sized shot. Define the single generation goal, stage geography, screen-left/right positions, action axis, eyelines, start/end state, acting progression, camera, physics, exact second-by-second beats, dialogue windows, music/ambience/SFX requirements, and reference needs. Do not write the final provider prompt yet and do not claim audio or media exists. Test clips are capped at 10 seconds unless the founder explicitly overrides test mode.\n\nMISSION: ${assignment.title}\nPLAN: ${plan}\nSCRIPT: ${story.output}\nART DIRECTION: ${creative.output}`,
   });
-  await writeStep(assignment, { key: 'production-sound-direction', position: 4, agentId: 'sonora', title: 'Sonora designs synchronized sound direction', status: 'done', output: { soundDirection: result.output, providerPlan: 'KIE Seedance synchronized audio only' } });
+  await writeStep(assignment, { key: 'motion-preliminary', position: 4, agentId: 'motion', title: 'Motion Preliminary designs blocking and audio requirements', status: 'done', output: { preliminaryDirection: result.output } });
   return result;
 }
 
-async function buildCorePacket(assignment, story, creative, sound, workflowKind) {
+async function runCoreSound(assignment, plan, story, creative, preliminary) {
+  await recordHandoff(assignment, 'motion-to-sonora-production-core', 'motion', 'sonora', { script: story.output, creative: creative.output, preliminary: preliminary.output });
+  await writeStep(assignment, { key: 'production-sound-direction', position: 4, agentId: 'sonora', title: 'Sonora designs synchronized sound direction', status: 'running', input: { script: story.output, kieEmbeddedAudio: true } });
+  const result = await runNyoniAgent({
+    agentId: 'sonora', project: assignment.projectName, projectContext: assignment.projectContext,
+    title: `Design a precise, commercially usable instrumental sound plan for this short video. Follow Motion Preliminary. Specify time-coded ambience, Foley, impacts, transitions, musical texture, dynamics, dialogue windows, and silence. Keep dialogue out unless it is explicitly present in the script. The authorized provider is KIE only; do not request WaveSpeed or ElevenLabs.\n\nMISSION: ${assignment.title}\nPLAN: ${plan}\nSCRIPT: ${story.output}\nVISUAL DIRECTION: ${creative.output}\nMOTION PRELIMINARY: ${preliminary.output}`,
+  });
+  await writeStep(assignment, { key: 'production-sound-direction', position: 4, agentId: 'sonora', title: 'Sonora designs synchronized sound direction', status: 'done', output: { soundDirection: result.output, providerPlan: 'KIE audio reference plus Seedance synchronization' } });
+  if (assignment.request?.production?.generateAudio !== true) return { ...result, audio: null };
+  await recordHandoff(assignment, 'sonora-direction-to-sonora-audio', 'sonora', 'sonora', { durationSeconds: assignment.request.production.durationSeconds, provider: 'kie' });
+  const audio = await runMediaProduction(
+    { ...assignment, agent_id: 'sonora' }, { output: result.output },
+    { key: 'sonora-audio-production', position: 5, title: 'Sonora generates the authorized KIE sound master' },
+  );
+  return { ...result, audio };
+}
+
+async function buildCorePacket(assignment, story, creative, preliminary, sound, workflowKind) {
   'use step';
-  await recordHandoff(assignment, 'sonora-to-motion-production-core', 'sonora', 'motion', { script: story.output, creative: creative.output, soundDirection: sound.output });
-  await writeStep(assignment, { key: 'production-context', position: 4, agentId: 'motion', title: 'Motion resolves canon and compiles the Scene Production Packet', status: 'running', input: { stableIds: assignment.request?.production || {} } });
+  await recordHandoff(assignment, 'sonora-to-motion-final', 'sonora', 'motion', { script: story.output, preliminary: preliminary.output, soundDirection: sound.output, audio: sound.audio?.media || [] });
+  await writeStep(assignment, { key: 'production-context', position: 6, agentId: 'motion', title: 'Motion Final resolves canon and compiles the Director Shot Packet', status: 'running', input: { stableIds: assignment.request?.production || {}, audioAssetIds: sound.audio?.media?.map((item) => item.assetId) || [] } });
   const requested = assignment.request?.production || {};
   const founderDirected = ['Colony Zero', 'Palava 231'].includes(assignment.projectName);
   const generation = {
@@ -659,6 +677,13 @@ async function buildCorePacket(assignment, story, creative, sound, workflowKind)
     aspectRatio: requested.aspectRatio || (workflowKind === 'nyoni_commercials_pipeline' ? '9:16' : '16:9'),
     generateAudio: requested.generateAudio === true, returnLastFrame: true,
   };
+  if (requested.testMode !== false && generation.durationSeconds > 10) {
+    throw new Error('Test-mode video clips are capped at 10 seconds. Set production.testMode=false only when the founder explicitly authorizes a longer production.');
+  }
+  const audioReferences = (sound.audio?.media || []).filter((item) => item.type === 'audio' && item.url).map((item, index) => ({
+    id: `sonora-audio-${index + 1}`, assetId: item.assetId, url: item.url, role: 'music',
+    label: `Sonora KIE sound master ${index + 1}`, durationSeconds: Number(requested.durationSeconds || 10), preservation: 'reference_guidance',
+  }));
   let packet = await resolveProductionContext(assignment, {
     requiresSeries: founderDirected,
     seriesDocumentId: requested.seriesDocumentId, productionDocumentId: requested.productionDocumentId,
@@ -670,15 +695,19 @@ async function buildCorePacket(assignment, story, creative, sound, workflowKind)
       { id: 'final-video', type: 'video', required: true, playable: true, label: 'Playable final video' },
       { id: 'review-package', type: 'review_package', required: true, playable: false, label: 'Founder review package' },
     ],
-    visualDirection: { creativeBrief: creative.output, soundDirection: sound.output },
+    directingPhase: 'final', frameRateIntent: requested.frameRateIntent || '24fps cinematic motion',
+    audioReferences, audioStrategy: { mode: audioReferences.length ? 'reference_guided' : generation.generateAudio ? 'provider_generated' : 'none', exactMastersRequired: false, instructions: [sound.output] },
+    stageGeography: requested.stageGeography || {}, eyelines: requested.eyelines || [], actionTimeline: requested.actionTimeline || [], endState: requested.endState || {}, negativeConstraints: requested.negativeConstraints || [],
+    visualDirection: { approvedDirection: 'Use Motion Final below. Raw Creative Markdown is intentionally excluded from the provider prompt.' },
   });
+  packet = { ...packet, budget: { ...packet.budget, estimatedUsd: estimateProviderCost(packet).estimatedUsd } };
   const motionDraft = await runNyoniAgent({
     agentId: 'motion', project: assignment.projectName, projectContext: assignment.projectContext,
-    title: `Convert this authoritative production context into exact shot direction. Specify character positions, screen geography, time-coded actions, performance, lens, motivated camera movement, foreground depth, light, materials, physics, contact, follow-through, synchronized sound, and negative constraints. Never discard a critical reference.\n\nSCRIPT:\n${packet.script.text}\n\nCREATIVE:\n${creative.output}\n\nSONORA SOUND PLAN:\n${sound.output}\n\nREFERENCES:\n${packet.references.map((item, index) => `${index + 1}. ${item.label} — ${item.role} — ${item.priority}`).join('\n') || 'None'}`,
+    title: `You are Motion FINAL. Using the authoritative packet, Motion Preliminary, completed Sonora assets, and approved art direction, create the definitive director-grade shot direction. Reconcile timing with the ${generation.durationSeconds}s limit. Specify the single goal, every reference role and exclusion, identity locks, stage geography, action axis, eyelines, dialogue recipients, acting progression, lens/camera, environment/materials, exact important timestamps, physics/contact, end-state continuity, synchronized audio cues, and shot-specific negative constraints. Do not paste the Creative report. Do not claim to have listened to audio; its stored duration metadata is ${audioReferences.length ? `${audioReferences[0].durationSeconds}s` : 'unavailable'}. Never discard a critical reference.\n\nSCRIPT:\n${packet.script.text}\n\nMOTION PRELIMINARY:\n${preliminary.output}\n\nAPPROVED ART DIRECTION:\n${creative.output}\n\nSONORA SOUND PLAN:\n${sound.output}\n\nVISUAL REFERENCES:\n${packet.references.map((item, index) => `@Image ${index + 1}: ${item.label} — ${item.role} — ${item.priority}`).join('\n') || 'None'}\nAUDIO REFERENCES:\n${audioReferences.map((item, index) => `@Audio ${index + 1}: ${item.label} — ${item.url}`).join('\n') || 'None'}`,
   });
   packet = { ...packet, motionPrompt: buildMotionProductionPrompt(packet, { goal: motionDraft.output }) };
   const persisted = await persistProductionPacket(packet);
-  await writeStep(assignment, { key: 'production-context', position: 4, agentId: 'motion', title: 'Motion resolves canon and compiles the Scene Production Packet', status: packet.blockers.length ? 'failed' : 'done', output: { packetId: persisted.id, schemaVersion: packet.schemaVersion, packetVersion: packet.packetVersion, blockers: packet.blockers, referenceManifest: packet.references.map((item, position) => ({ position: position + 1, id: item.id, role: item.role, priority: item.priority })) }, error: packet.blockers.length ? packet.blockers.map((item) => item.message).join(' ') : null });
+  await writeStep(assignment, { key: 'production-context', position: 6, agentId: 'motion', title: 'Motion Final compiles the Director Shot Packet', status: packet.blockers.length ? 'failed' : 'done', output: { packetId: persisted.id, schemaVersion: packet.schemaVersion, packetVersion: packet.packetVersion, blockers: packet.blockers, referenceManifest: packet.references.map((item, position) => ({ token: `@Image ${position + 1}`, position: position + 1, id: item.id, role: item.role, priority: item.priority })), audioManifest: packet.audioReferences.map((item, position) => ({ token: `@Audio ${position + 1}`, id: item.id, assetId: item.assetId, durationSeconds: item.durationSeconds })) }, error: packet.blockers.length ? packet.blockers.map((item) => item.message).join(' ') : null });
   return { packet, packetRowId: persisted.id, motionSessionId: motionDraft.sessionId };
 }
 
@@ -841,14 +870,14 @@ async function runProductionCoreWorkflow(assignment, plan, workflowKind) {
   const research = workflowKind === 'nyoni_commercials_pipeline' ? await runCommercialResearch(assignment, plan) : null;
   const story = await runCoreStory(assignment, plan, workflowKind, research);
   const creative = await runCoreCreative(assignment, plan, story, workflowKind);
-  const sound = await runCoreSound(assignment, plan, story, creative);
-  const core = await buildCorePacket(assignment, story, creative, sound, workflowKind);
-  const production = await runCoreGeneration(assignment, core);
-  const preliminaryQa = await runCoreQa(assignment, core, production);
-  const finishing = await runCoreFinishing(assignment, core, production, preliminaryQa);
-  const qa = finishing.finalQa;
-  const rally = await runCoreRally(assignment, plan, story, creative, core, finishing.production, qa);
-  return finalizeCoreProduction(assignment, { plan, research, story, creative, sound, core, production: finishing.production, qa, rally });
+  const preliminary = await runCoreMotionPreliminary(assignment, plan, story, creative);
+  const sound = await runCoreSound(assignment, plan, story, creative, preliminary);
+  const core = await buildCorePacket(assignment, story, creative, preliminary, sound, workflowKind);
+  const videoProduction = await runCoreGeneration(assignment, core);
+  const production = { ...videoProduction, media: [...(sound.audio?.media || []), ...(videoProduction.media || [])], totalCostUsd: Number(sound.audio?.totalCostUsd || 0) + Number(videoProduction.totalCostUsd || 0) };
+  const qa = await runCoreQa(assignment, core, production);
+  const rally = await runCoreRally(assignment, plan, story, creative, core, production, qa);
+  return finalizeCoreProduction(assignment, { plan, research, story, creative, preliminary, sound, core, production, qa, rally });
 }
 
 async function finalizeAssignment(assignment, plan, deliverable, production = null) {

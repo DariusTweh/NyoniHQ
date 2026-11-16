@@ -92,7 +92,7 @@ export function resolveProductionContextFromSnapshot(snapshot, input) {
   }
   const seriesDocument = seriesId ? seriesDocuments.find((row) => row.id === seriesId && String(row.user_id) === String(assignment.owner_id)) || null : null;
   if (!seriesId && input.requiresSeries !== false) blockers.push(blocker('SERIES_MAPPING_REQUIRED', 'This project needs an explicit series_document_id mapping before canon can be loaded.', 'series'));
-  else if (!seriesDocument) blockers.push(blocker('SERIES_NOT_FOUND', 'The explicitly mapped series document was not found for this owner.', 'series', seriesId));
+  else if (seriesId && !seriesDocument) blockers.push(blocker('SERIES_NOT_FOUND', 'The explicitly mapped series document was not found for this owner.', 'series', seriesId));
 
   const productionId = input.productionDocumentId || null;
   const productionDocument = productionId ? productionDocuments.find((row) => row.id === productionId && String(row.user_id) === String(assignment.owner_id)) || null : null;
@@ -139,6 +139,11 @@ export function resolveProductionContextFromSnapshot(snapshot, input) {
     cameraDirection: input.cameraDirection || shot?.camera || scene?.camera || scene?.shotMetadata || {}, visualDirection: input.visualDirection || shot?.visualDirection || scene?.visualDirection || series?.bible?.visualDirection || {},
     voicePolicy: inferVoicePolicy(project.name, series, production), generation,
     motionPrompt: String(input.motionPrompt || ''),
+    directingPhase: input.directingPhase || 'final', frameRateIntent: input.frameRateIntent || '24fps cinematic motion unless the project specifies otherwise',
+    stageGeography: input.stageGeography || {}, eyelines: array(input.eyelines), actionTimeline: array(input.actionTimeline),
+    endState: input.endState || {}, negativeConstraints: array(input.negativeConstraints).map(String),
+    audioReferences: array(input.audioReferences),
+    audioStrategy: input.audioStrategy || { mode: generation.generateAudio ? 'provider_generated' : 'none', exactMastersRequired: false, instructions: [] },
     budget: { estimatedUsd: Number(input.estimatedUsd || 0), approvedLimitUsd: Number(input.approvedLimitUsd || 0), currency: 'USD' },
     expectedDeliverables: expectedDeliverables(input),
     sourceVersions: [

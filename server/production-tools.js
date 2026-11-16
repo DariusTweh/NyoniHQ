@@ -33,7 +33,7 @@ function legacyKieInput(config, assignment, prompt) {
   if (config.kind === 'text-to-video') return { prompt, generate_audio: true, return_last_frame: true, resolution: '480p', aspect_ratio: '9:16', duration: 5 };
   if (config.kind === 'image-to-video') return { prompt, first_frame_url: sourceUrl, generate_audio: true, return_last_frame: true, resolution: '480p', aspect_ratio: '9:16', duration: 5 };
   if (config.kind === 'video-edit') return { prompt, reference_video_urls: [sourceUrl], omni_reference_task_type: 'edit', generate_audio: true, resolution: '480p', aspect_ratio: 'adaptive', duration: -1 };
-  if (config.kind === 'text-to-music') return { custom_mode: true, instrumental: true, model: 'V6_MINI', title: assignment.title.slice(0, 80), style: prompt.slice(0, 1000), duration: 30, variety: 1 };
+  if (config.kind === 'text-to-music') return { custom_mode: true, instrumental: true, model: 'V6_MINI', title: assignment.title.slice(0, 80), style: prompt.slice(0, 1000), duration: Math.max(10, Math.min(360, Number(assignment.request?.production?.durationSeconds || 10))), variety: 1 };
   return { prompt, image_input: sourceUrl ? [sourceUrl] : [], aspect_ratio: '4:5', resolution: '1K', output_format: 'jpg' };
 }
 
