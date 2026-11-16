@@ -10,7 +10,7 @@ import { evaluateProductionQuality } from '../server/quality-control.js';
 import { estimateProviderCost } from '../server/provider-adapters.js';
 import { storyJsonSchema, storyPacketToScreenplay, validateStoryScriptPacket } from '../server/story-engine.js';
 import { classifyWorkflowIntent, mergeRequiredAgents } from '../server/workflow-intent.js';
-import { assembleDialogueCut } from '../server/cutline.js';
+import { assembleDialogueCut, assembleDialogueReferenceMaster } from '../server/cutline.js';
 
 async function getAssignment(assignmentId) {
   'use step';
@@ -702,8 +702,11 @@ async function runCoreVox(assignment, story, preliminary) {
   const media = audio.media || [];
   if (media.some((item) => item.dialogueSignature !== story.packet.dialogueSignature)) throw new Error('Vox output changed the immutable dialogue mapping.');
   const distinctVoiceCount = new Set(media.flatMap((item) => item.voiceIds || [item.voiceId]).filter(Boolean)).size;
-  await writeStep(assignment, { key: 'vox-dialogue', position: 5, agentId: 'vox', title: 'Vox performs the exact screenplay with two bound voices', status: 'done', output: { media, totalCostUsd: audio.totalCostUsd, dialogueSignature: story.packet.dialogueSignature, distinctVoiceCount, mode: audio.fallbackReason ? 'OpenAI two-voice fallback after ElevenLabs billing outage' : 'ElevenLabs v4 multi-speaker dialogue', fallbackReason: audio.fallbackReason || null } });
-  return { output: audio.fallbackReason ? 'Vox generated exact line masters with two OpenAI voices after the ElevenLabs billing outage.' : 'One exact two-speaker ElevenLabs v4 dialogue master generated.', audio, agentId: 'vox' };
+  const referenceAudio = media.length > 1
+    ? await assembleDialogueReferenceMaster(assignment, { dialogueMedia: media, durationSeconds: story.packet.durationSeconds, dialogueSignature: story.packet.dialogueSignature })
+    : { media };
+  await writeStep(assignment, { key: 'vox-dialogue', position: 5, agentId: 'vox', title: 'Vox performs the exact screenplay with two bound voices', status: 'done', output: { media, referenceMaster: referenceAudio.media, totalCostUsd: audio.totalCostUsd, dialogueSignature: story.packet.dialogueSignature, distinctVoiceCount, mode: audio.fallbackReason ? 'OpenAI two-voice fallback after ElevenLabs billing outage' : 'ElevenLabs v4 multi-speaker dialogue', fallbackReason: audio.fallbackReason || null } });
+  return { output: audio.fallbackReason ? 'Vox generated exact line masters with two OpenAI voices after the ElevenLabs billing outage.' : 'One exact two-speaker ElevenLabs v4 dialogue master generated.', audio, referenceAudio, agentId: 'vox' };
 }
 
 async function runCoreMotionPreliminary(assignment, plan, story, creative) {
@@ -761,7 +764,7 @@ async function buildCorePacket(assignment, story, creative, preliminary, sound, 
   if (requested.testMode !== false && generation.durationSeconds > 10) {
     throw new Error('Test-mode video clips are capped at 10 seconds. Set production.testMode=false only when the founder explicitly authorizes a longer production.');
   }
-  const audioReferences = (sound.audio?.media || []).filter((item) => item.type === 'audio' && item.url).map((item, index) => ({
+  const audioReferences = (sound.referenceAudio?.media || sound.audio?.media || []).filter((item) => item.type === 'audio' && item.url).map((item, index) => ({
     id: `vox-dialogue-${index + 1}`, assetId: item.assetId, url: item.url, role: 'dialogue',
     label: item.lineId ? `Vox exact dialogue line ${item.lineId}` : `Vox exact two-speaker dialogue master ${index + 1}`,
     durationSeconds: item.startSeconds !== undefined && item.endSeconds !== undefined ? Math.max(0.1, Number(item.endSeconds) - Number(item.startSeconds)) : null,
@@ -816,7 +819,7 @@ async function createCoreProductionJob(assignment, packetRowId, packet, agentId,
   const { data, error } = await client.from('nyoni_production_jobs').upsert({
     owner_id: assignment.owner_id, project_id: assignment.project_id, assignment_id: assignment.id,
     packet_id: packetRowId, agent_id: agentId, job_kind: jobKind, state: 'queued',
-    idempotency_key: `${assignment.id}:packet:${packet.packetVersion}:${agentId}:${jobKind}`,
+    idempotency_key: `${assignment.id}:packet:${packet.packetId}:${packet.packetVersion}:${agentId}:${jobKind}`,
     input: { packetId: packet.packetId, packetVersion: packet.packetVersion, expectedDeliverables: packet.expectedDeliverables },
     estimated_cost_usd: packet.budget.estimatedUsd,
   }, { onConflict: 'owner_id,idempotency_key' }).select('*').single();
