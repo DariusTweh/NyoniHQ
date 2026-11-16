@@ -104,6 +104,7 @@ export default defineConfig({
   ],
   nitro: {
     serverDir: './server',
+    traceDeps: ['ffmpeg-static*'],
   },
   server: {
     host: '127.0.0.1',

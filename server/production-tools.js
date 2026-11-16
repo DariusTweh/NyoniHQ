@@ -28,7 +28,7 @@ function productionPrompt(assignment, deliverable) {
 
 function legacyKieInput(config, assignment, prompt) {
   const sourceUrl = assignment.source_url;
-  if (config.kind === 'text-to-image') return { prompt, aspect_ratio: '1:1', resolution: '1K' };
+  if (config.kind === 'text-to-image') return { prompt, aspect_ratio: assignment.request?.production?.aspectRatio || '1:1', resolution: '1K' };
   if (config.kind === 'image-to-image') return { prompt, input_urls: [sourceUrl], aspect_ratio: '1:1', resolution: '1K' };
   if (config.kind === 'text-to-video') return { prompt, generate_audio: true, return_last_frame: true, resolution: '480p', aspect_ratio: '9:16', duration: 5 };
   if (config.kind === 'image-to-video') return { prompt, first_frame_url: sourceUrl, generate_audio: true, return_last_frame: true, resolution: '480p', aspect_ratio: '9:16', duration: 5 };
@@ -134,6 +134,92 @@ async function submitElevenLabs(assignment, config, prompt, packet = null) {
   const jobId = await recordJob(assignment, config, null, { text: prompt.slice(0, 5000), voiceId }, 'completed', packet);
   await client.from('generation_jobs').update({ output: { urls: [url], voiceId }, updated_at: new Date().toISOString() }).eq('id', jobId);
   return { status: 'completed', jobId, provider: config.provider, model: config.model, kind: config.kind, contentType: config.contentType, estimatedCostUsd: config.estimatedCostUsd, urls: [url] };
+}
+
+export async function generateVoxDialogueLine(assignment, line, voiceId) {
+  if (!process.env.ELEVENLABS_API_KEY) throw new Error('ELEVENLABS_API_KEY is not connected.');
+  if (!voiceId) throw new Error(`Vox requires an explicit ElevenLabs voice binding for ${line.speakerId}.`);
+  const config = MEDIA_AGENT_CONFIG.vox;
+  const idempotencyKey = `${assignment.id}:vox:${line.id}:${voiceId}`;
+  const reservation = await reserveBudget(assignment, config, config.estimatedCostUsd, idempotencyKey);
+  try {
+    const client = studioClient();
+    const { data: existing } = await client.from('generation_jobs').select('id,output').eq('user_id', assignment.owner_id).eq('project_id', assignment.project_id).eq('status', 'completed').contains('input', { assignmentId: assignment.id, lineId: line.id, voiceId }).order('updated_at', { ascending: false }).limit(1).maybeSingle();
+    if (existing?.output?.urls?.[0]) {
+      await setReservationState(reservation.id, 'released');
+      return { media: [{ ...existing.output.media, url: existing.output.urls[0] }], totalCostUsd: 0, reused: true };
+    }
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}/with-timestamps?output_format=mp3_44100_128`, {
+      method: 'POST', headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: line.text, model_id: config.model, voice_settings: { stability: 0.45, similarity_boost: 0.78, style: 0.35, use_speaker_boost: true } }), signal: AbortSignal.timeout(120000),
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body?.audio_base64) throw new Error(`ElevenLabs rejected ${line.id}: ${body?.detail?.message || body?.detail || `HTTP ${response.status}`}`);
+    const ends = body.alignment?.character_end_times_seconds || body.normalized_alignment?.character_end_times_seconds || [];
+    const actualDurationSeconds = Number(ends.at(-1) || Math.max(0.2, line.endSeconds - line.startSeconds));
+    const storagePath = `${assignment.owner_id}/${assignment.id}/vox-${line.id}.mp3`;
+    const { error: uploadError } = await client.storage.from('nyoni-artifacts').upload(storagePath, Buffer.from(body.audio_base64, 'base64'), { contentType: 'audio/mpeg', upsert: true });
+    if (uploadError) throw new Error(`Vox upload failed: ${uploadError.message}`);
+    const url = client.storage.from('nyoni-artifacts').getPublicUrl(storagePath).data.publicUrl;
+    const jobId = await recordJob({ ...assignment, agent_id: 'vox' }, config, null, { text: line.text, lineId: line.id, speakerId: line.speakerId, recipientId: line.recipientId, voiceId }, 'completed');
+    const { data: asset, error: assetError } = await client.from('assets').insert({ user_id: assignment.owner_id, project_id: assignment.project_id, type: 'audio', url, storage_path: storagePath, provider: 'elevenlabs', model: config.model, prompt: line.text, metadata: { assignmentId: assignment.id, lineId: line.id, speakerId: line.speakerId, recipientId: line.recipientId, voiceId, plannedStartSeconds: line.startSeconds, plannedEndSeconds: line.endSeconds, actualDurationSeconds, preservation: 'exact_master' } }).select('id').single();
+    if (assetError) throw new Error(`Vox asset record failed: ${assetError.message}`);
+    const media = { url, assetId: asset.id, type: 'audio', kind: 'dialogue', provider: 'elevenlabs', model: config.model, playable: true, role: 'dialogue_master', lineId: line.id, speakerId: line.speakerId, recipientId: line.recipientId, voiceId, text: line.text, startSeconds: line.startSeconds, endSeconds: line.endSeconds, actualDurationSeconds };
+    await client.from('generation_jobs').update({ output: { urls: [url], media }, updated_at: new Date().toISOString() }).eq('id', jobId);
+    const { data: toolRun, error: runError } = await client.from('nyoni_tool_runs').insert({ assignment_id: assignment.id, owner_id: assignment.owner_id, tool_name: 'dialogue-voice', provider: 'elevenlabs', status: 'done', idempotency_key: idempotencyKey, input: { lineId: line.id, speakerId: line.speakerId, voiceId }, output: { media: [media], alignment: body.alignment || body.normalized_alignment || null }, cost_usd: config.estimatedCostUsd, completed_at: new Date().toISOString() }).select('id').single();
+    if (runError) throw new Error(`Vox tool run failed: ${runError.message}`);
+    await client.from('nyoni_usage_ledger').insert({ owner_id: assignment.owner_id, project_id: assignment.project_id, assignment_id: assignment.id, tool_run_id: toolRun.id, provider: 'elevenlabs', model: config.model, units: { characters: line.text.length, generations: 1 }, cost_usd: config.estimatedCostUsd });
+    await setReservationState(reservation.id, 'captured', config.estimatedCostUsd);
+    return { media: [media], totalCostUsd: config.estimatedCostUsd, provider: 'elevenlabs', model: config.model };
+  } catch (error) {
+    await setReservationState(reservation.id, 'released').catch(() => {});
+    throw error;
+  }
+}
+
+export async function generateVoxDialogueConversation(assignment, storyPacket, voiceBindings) {
+  if (!process.env.ELEVENLABS_API_KEY) throw new Error('ELEVENLABS_API_KEY is not connected.');
+  const config = { provider: 'elevenlabs', model: 'eleven_v4', kind: 'text-to-dialogue', contentType: 'audio', estimatedCostUsd: 0.10 };
+  const inputs = storyPacket.dialogue.map((line) => {
+    const voiceId = voiceBindings[line.speakerId];
+    if (!voiceId) throw new Error(`Vox requires an explicit ElevenLabs voice binding for ${line.speakerId}.`);
+    return { text: `[${line.emotion}; ${line.performance}] ${line.text}`, voice_id: voiceId };
+  });
+  if (new Set(inputs.map((item) => item.voice_id)).size !== storyPacket.characters.length) throw new Error('Vox requires two distinct voice IDs for this conversation.');
+  const idempotencyKey = `${assignment.id}:vox:dialogue:${storyPacket.dialogueSignature}`;
+  const reservation = await reserveBudget(assignment, config, config.estimatedCostUsd, idempotencyKey);
+  try {
+    const client = studioClient();
+    const { data: existing } = await client.from('generation_jobs').select('id,output').eq('user_id', assignment.owner_id).eq('project_id', assignment.project_id).eq('status', 'completed').contains('input', { assignmentId: assignment.id, dialogueSignature: storyPacket.dialogueSignature }).order('updated_at', { ascending: false }).limit(1).maybeSingle();
+    if (existing?.output?.media?.url) {
+      await setReservationState(reservation.id, 'released');
+      return { media: [existing.output.media], totalCostUsd: 0, provider: config.provider, model: config.model, reused: true };
+    }
+    const response = await fetch('https://api.elevenlabs.io/v1/text-to-dialogue?output_format=mp3_44100_128', {
+      method: 'POST', headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
+      body: JSON.stringify({ model_id: 'eleven_v4', inputs }), signal: AbortSignal.timeout(180000),
+    });
+    if (!response.ok) throw new Error(`ElevenLabs dialogue generation failed with HTTP ${response.status}: ${(await response.text()).slice(0, 800)}`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const storagePath = `${assignment.owner_id}/${assignment.id}/vox-dialogue-master.mp3`;
+    const { error: uploadError } = await client.storage.from('nyoni-artifacts').upload(storagePath, buffer, { contentType: 'audio/mpeg', upsert: true });
+    if (uploadError) throw new Error(`Vox dialogue upload failed: ${uploadError.message}`);
+    const url = client.storage.from('nyoni-artifacts').getPublicUrl(storagePath).data.publicUrl;
+    const lineMap = storyPacket.dialogue.map((line) => ({ id: line.id, speakerId: line.speakerId, recipientId: line.recipientId, text: line.text, startSeconds: line.startSeconds, endSeconds: line.endSeconds, voiceId: voiceBindings[line.speakerId] }));
+    const jobId = await recordJob({ ...assignment, agent_id: 'vox' }, config, null, { dialogueSignature: storyPacket.dialogueSignature, inputs: inputs.map((item, index) => ({ ...item, lineId: storyPacket.dialogue[index].id })) }, 'completed');
+    const { data: asset, error: assetError } = await client.from('assets').insert({ user_id: assignment.owner_id, project_id: assignment.project_id, type: 'audio', url, storage_path: storagePath, provider: 'elevenlabs', model: config.model, prompt: storyPacket.title, metadata: { assignmentId: assignment.id, role: 'dialogue_master', dialogueSignature: storyPacket.dialogueSignature, lineMap, characterVoiceBindings: voiceBindings, preservation: 'exact_master' } }).select('id').single();
+    if (assetError) throw new Error(`Vox dialogue asset record failed: ${assetError.message}`);
+    const media = { url, assetId: asset.id, type: 'audio', kind: 'dialogue', provider: config.provider, model: config.model, playable: true, role: 'dialogue_master', startSeconds: 0, dialogueSignature: storyPacket.dialogueSignature, lineMap, speakerIds: storyPacket.characters.map((item) => item.id), voiceIds: [...new Set(inputs.map((item) => item.voice_id))] };
+    await client.from('generation_jobs').update({ output: { urls: [url], media }, updated_at: new Date().toISOString() }).eq('id', jobId);
+    const { data: toolRun, error: runError } = await client.from('nyoni_tool_runs').insert({ assignment_id: assignment.id, owner_id: assignment.owner_id, tool_name: 'text-to-dialogue', provider: config.provider, status: 'done', idempotency_key: idempotencyKey, input: { dialogueSignature: storyPacket.dialogueSignature, lineMap }, output: { media: [media] }, cost_usd: config.estimatedCostUsd, completed_at: new Date().toISOString() }).select('id').single();
+    if (runError) throw new Error(`Vox dialogue tool run failed: ${runError.message}`);
+    await client.from('nyoni_usage_ledger').insert({ owner_id: assignment.owner_id, project_id: assignment.project_id, assignment_id: assignment.id, tool_run_id: toolRun.id, provider: config.provider, model: config.model, units: { characters: inputs.reduce((sum, item) => sum + item.text.length, 0), turns: inputs.length }, cost_usd: config.estimatedCostUsd });
+    await setReservationState(reservation.id, 'captured', config.estimatedCostUsd);
+    return { media: [media], totalCostUsd: config.estimatedCostUsd, provider: config.provider, model: config.model };
+  } catch (error) {
+    await setReservationState(reservation.id, 'released').catch(() => {});
+    throw error;
+  }
 }
 
 async function findReusableCompletedJob(assignment, config, packet, reservationId, estimate) {

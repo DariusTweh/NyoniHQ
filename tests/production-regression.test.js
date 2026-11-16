@@ -23,6 +23,10 @@ test('production workflow persists jobs before provider submission and preserves
   assert.match(workflow, /status: ready \? 'waiting_approval' : 'failed'/);
   assert.match(workflow, /runCommercialResearch\(assignment, plan\)/);
   assert.match(workflow, /cutline-to-pulse-final-qa/);
+  assert.match(workflow, /generateVoxDialogueConversation/);
+  assert.match(workflow, /story-quality-gate/);
+  assert.match(workflow, /assembleDialogueCut/);
+  assert.doesNotMatch(workflow, /specialists\.length === 4/);
 });
 
 test('publishing remains a separate founder approval boundary', async () => {
