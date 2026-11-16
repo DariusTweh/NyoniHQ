@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildMotionProductionPrompt } from '../server/motion-engine.js';
 import { buildKieSeedanceRequest, buildWaveSpeedH3Request, estimateProviderCost, ProviderCompatibilityError } from '../server/provider-adapters.js';
-import { authorizedVoiceId, submitStudioGeneration } from '../server/production-tools.js';
+import { authorizedVoiceId, selectContentUrls, submitStudioGeneration } from '../server/production-tools.js';
 
 function packet(overrides = {}) {
   return {
@@ -89,5 +89,15 @@ test('voice selection never falls back to the first account voice', () => {
     assert.equal(authorizedVoiceId({ request: {} }, null), null);
     assert.throws(() => authorizedVoiceId({ request: {} }, { voicePolicy: { mode: 'approved-human-master', voiceProfileId: null } }), /approved human voice masters/);
   } finally { if (previous) process.env.NYONI_ELEVENLABS_VOICE_ID = previous; }
+});
+
+test('provider media selection excludes Suno cover art and duplicate streams', () => {
+  const urls = [
+    'https://cdn.example.test/song.mp3',
+    'https://cdn.example.test/cover.jpeg',
+    'https://cdn.example.test/song-stream.mp3',
+  ];
+  assert.deepEqual(selectContentUrls(urls, 'audio'), ['https://cdn.example.test/song.mp3']);
+  assert.deepEqual(selectContentUrls(urls, 'image'), ['https://cdn.example.test/cover.jpeg']);
 });
 

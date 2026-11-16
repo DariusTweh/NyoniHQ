@@ -136,6 +136,26 @@ async function submitElevenLabs(assignment, config, prompt, packet = null) {
   return { status: 'completed', jobId, provider: config.provider, model: config.model, kind: config.kind, contentType: config.contentType, estimatedCostUsd: config.estimatedCostUsd, urls: [url] };
 }
 
+async function findReusableCompletedJob(assignment, config, packet, reservationId, estimate) {
+  const client = studioClient();
+  let query = client.from('generation_jobs').select('id,provider_job_id,output,input,updated_at')
+    .eq('user_id', assignment.owner_id).eq('project_id', assignment.project_id)
+    .eq('provider', config.provider).eq('model', config.model).eq('type', config.kind).eq('status', 'completed')
+    .contains('input', { assignmentId: assignment.id, agentId: assignment.agent_id })
+    .order('updated_at', { ascending: false }).limit(1);
+  const { data, error } = await query.maybeSingle();
+  if (error) throw new Error(`Completed generation lookup failed: ${error.message}`);
+  if (!data || (packet && data.input?.productionPacketId !== packet.packetId)) return null;
+  const urls = selectContentUrls(extractUrls(data.output?.urls || data.output), config.contentType);
+  if (!urls.length) return null;
+  return {
+    status: 'completed', providerJobId: data.provider_job_id, jobId: data.id,
+    provider: config.provider, model: config.model, kind: config.kind, contentType: config.contentType,
+    estimatedCostUsd: estimate.estimatedUsd, reservationId, priceVersion: estimate.priceVersion,
+    productionPacketId: packet?.packetId || null, urls, reusedCompletedJob: true,
+  };
+}
+
 export async function submitStudioGeneration(assignment, deliverable, options = {}) {
   const baseConfig = MEDIA_AGENT_CONFIG[assignment.agent_id];
   if (!baseConfig) throw new Error(`No Studio generation tool is configured for ${assignment.agent_id}.`);
@@ -154,6 +174,8 @@ export async function submitStudioGeneration(assignment, deliverable, options = 
   const idempotencyKey = options.idempotencyKey || `${assignment.id}:${config.kind}:${packet?.packetVersion || 1}`;
   const reservation = await reserveBudget(assignment, config, estimate.estimatedUsd, idempotencyKey, options.productionJobId || null);
   try {
+    const reusable = await findReusableCompletedJob(assignment, config, packet, reservation.id, estimate);
+    if (reusable) return reusable;
     const prompt = packet?.motionPrompt || productionPrompt(assignment, deliverable);
     const job = config.provider === 'elevenlabs'
       ? await submitElevenLabs(assignment, config, prompt, packet)
@@ -174,6 +196,20 @@ function extractUrls(value, urls = new Set()) {
   return [...urls];
 }
 
+export function selectContentUrls(urls, contentType) {
+  const unique = [...new Set((urls || []).filter((value) => typeof value === 'string'))];
+  const matches = unique.filter((value) => {
+    let path = '';
+    try { path = new URL(value).pathname.toLowerCase(); } catch { return false; }
+    if (contentType === 'audio') return /\.(mp3|wav|aac|m4a|ogg|flac)$/.test(path);
+    if (contentType === 'video') return /\.(mp4|mov|webm|m4v)$/.test(path);
+    if (contentType === 'image') return /\.(jpe?g|png|webp|gif|avif)$/.test(path);
+    return true;
+  });
+  if (contentType === 'audio' || contentType === 'video') return matches.slice(0, 1);
+  return matches;
+}
+
 export async function pollStudioGeneration(assignment, job) {
   if (job.status === 'completed') return job;
   let status; let urls = [];
@@ -183,7 +219,7 @@ export async function pollStudioGeneration(assignment, job) {
     if (!response.ok || !result) throw new Error(result?.error || body?.message || `WaveSpeed status check failed with HTTP ${response.status}.`);
     if (['failed','cancelled','timeout','deleted'].includes(result.status)) throw new Error(result.error || `WaveSpeed generation ended with ${result.status}.`);
     status = result.status === 'completed' ? 'completed' : result.status === 'processing' ? 'processing' : 'queued';
-    urls = status === 'completed' ? extractUrls(result.outputs) : [];
+    urls = status === 'completed' ? selectContentUrls(extractUrls(result.outputs), job.contentType) : [];
   } else {
     const response = await fetch(`${KIE_JOBS_URL}/recordInfo?taskId=${encodeURIComponent(job.providerJobId)}`, { headers: { Authorization: `Bearer ${process.env.KIE_API_KEY}` }, cache: 'no-store', signal: AbortSignal.timeout(30000) });
     const body = await response.json().catch(() => null);
@@ -191,7 +227,7 @@ export async function pollStudioGeneration(assignment, job) {
     const state = body.data.state;
     status = state === 'success' ? 'completed' : state === 'fail' ? 'failed' : state === 'generating' || state === 'processing' ? 'processing' : 'queued';
     if (status === 'failed') throw new Error(body.data.failMsg || body.data.failCode || 'KIE generation failed.');
-    urls = status === 'completed' ? extractUrls(body.data.resultJson) : [];
+    urls = status === 'completed' ? selectContentUrls(extractUrls(body.data.resultJson), job.contentType) : [];
   }
   const client = studioClient();
   await client.from('generation_jobs').update({ status, output: status === 'completed' ? { urls } : null, updated_at: new Date().toISOString() }).eq('id', job.jobId);
