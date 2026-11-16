@@ -646,7 +646,8 @@ async function runCoreMotionPreliminary(assignment, plan, story, creative) {
   return result;
 }
 
-async function runCoreSound(assignment, plan, story, creative, preliminary) {
+async function runCoreSoundDirection(assignment, plan, story, creative, preliminary) {
+  'use step';
   await recordHandoff(assignment, 'motion-to-sonora-production-core', 'motion', 'sonora', { script: story.output, creative: creative.output, preliminary: preliminary.output });
   await writeStep(assignment, { key: 'production-sound-direction', position: 4, agentId: 'sonora', title: 'Sonora designs synchronized sound direction', status: 'running', input: { script: story.output, kieEmbeddedAudio: true } });
   const result = await runNyoniAgent({
@@ -654,6 +655,11 @@ async function runCoreSound(assignment, plan, story, creative, preliminary) {
     title: `Design a precise, commercially usable instrumental sound plan for this short video. Follow Motion Preliminary. Specify time-coded ambience, Foley, impacts, transitions, musical texture, dynamics, dialogue windows, and silence. Keep dialogue out unless it is explicitly present in the script. The authorized provider is KIE only; do not request WaveSpeed or ElevenLabs.\n\nMISSION: ${assignment.title}\nPLAN: ${plan}\nSCRIPT: ${story.output}\nVISUAL DIRECTION: ${creative.output}\nMOTION PRELIMINARY: ${preliminary.output}`,
   });
   await writeStep(assignment, { key: 'production-sound-direction', position: 4, agentId: 'sonora', title: 'Sonora designs synchronized sound direction', status: 'done', output: { soundDirection: result.output, providerPlan: 'KIE audio reference plus Seedance synchronization' } });
+  return result;
+}
+
+async function runCoreSound(assignment, plan, story, creative, preliminary) {
+  const result = await runCoreSoundDirection(assignment, plan, story, creative, preliminary);
   if (assignment.request?.production?.generateAudio !== true) return { ...result, audio: null };
   await recordHandoff(assignment, 'sonora-direction-to-sonora-audio', 'sonora', 'sonora', { durationSeconds: assignment.request.production.durationSeconds, provider: 'kie' });
   const audio = await runMediaProduction(
