@@ -48,6 +48,7 @@ test('legacy commercial and carousel flows and HQ interaction stay present', asy
 
 test('media persistence keys retries to the durable provider job', async () => {
   const tools = await read('server/production-tools.js');
-  assert.match(tools, /idempotency_key: `\$\{assignment\.id\}:\$\{job\.kind\}:\$\{job\.jobId\}`/);
+  assert.match(tools, /const persistenceKey = `\$\{assignment\.id\}:\$\{job\.kind\}:\$\{job\.jobId\}`/);
+  assert.match(tools, /idempotency_key: persistenceKey/);
   assert.match(tools, /setReservationState\(job\.reservationId, 'captured'/);
 });

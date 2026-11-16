@@ -3,7 +3,7 @@ import { sleep } from 'workflow';
 import { codexModel, runNyoniAgent } from '../server/nyoni-runtime.js';
 import { getHunterInboxContext } from '../server/google-tools.js';
 import { recordAssignmentEvent, studioClient } from '../server/nyoni-store.js';
-import { generateVoxDialogueConversation, isMediaAgent, persistStudioGeneration, pollStudioGeneration, submitPrismFinishing, submitStudioGeneration } from '../server/production-tools.js';
+import { generateOpenAiDialogueFallback, generateVoxDialogueConversation, isMediaAgent, persistStudioGeneration, pollStudioGeneration, submitPrismFinishing, submitStudioGeneration } from '../server/production-tools.js';
 import { resolveProductionContext, persistProductionPacket } from '../server/production-context.js';
 import { buildMotionProductionPrompt } from '../server/motion-engine.js';
 import { evaluateProductionQuality } from '../server/quality-control.js';
@@ -610,6 +610,16 @@ async function runCoreStory(assignment, plan, workflowKind, research = null) {
   const intent = classifyWorkflowIntent(assignment);
   if (!intent.requiresStory) throw new Error('The production-core workflow requires an explicit scripted narrative intent.');
   const title = 'Story writes and validates the production screenplay';
+  const existingClient = studioClient();
+  const { data: existingArtifact } = await existingClient.from('nyoni_artifacts').select('id,nyoni_artifact_versions(version,content)').eq('assignment_id', assignment.id).eq('artifact_type', 'story_script_packet').eq('status', 'ready').order('created_at', { ascending: false }).limit(1).maybeSingle();
+  const existingVersion = existingArtifact?.nyoni_artifact_versions?.sort((a, b) => b.version - a.version)?.[0];
+  if (existingVersion?.content?.packet && existingVersion?.content?.qualityGate?.disposition === 'PASS') {
+    const packet = existingVersion.content.packet;
+    const output = existingVersion.content.screenplay || storyPacketToScreenplay(packet);
+    await writeStep(assignment, { key: 'story-script', position: 2, agentId: 'story', title, status: 'done', output: { script: output, packet, artifactId: existingArtifact.id, version: existingVersion.version, resumed: true } });
+    await writeStep(assignment, { key: 'story-quality-gate', position: 3, agentId: 'story', title: 'Story passes the screenplay quality gate', status: 'done', output: { disposition: 'PASS', findings: [], dialogueSignature: packet.dialogueSignature, resumed: true } });
+    return { output, packet, artifactId: existingArtifact.id, version: existingVersion.version, sessionId: null, agentId: 'story', resumed: true };
+  }
   await recordHandoff(assignment, 'migo-to-story-production-core', 'migo', 'story', { assignment: assignment.title, plan, projectId: assignment.project_id, intent });
   await writeStep(assignment, { key: 'story-script', position: 2, agentId: 'story', title, status: 'running', input: { plan, intent, projectContext: true } });
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -648,6 +658,9 @@ async function runCoreStory(assignment, plan, workflowKind, research = null) {
 async function runCoreCreative(assignment, plan, story, workflowKind) {
   'use step';
   const fromAgent = story.agentId;
+  const client = studioClient();
+  const { data: existing } = await client.from('nyoni_workflow_steps').select('output').eq('assignment_id', assignment.id).eq('step_key', 'production-art-direction').eq('status', 'done').maybeSingle();
+  if (existing?.output?.direction) return { output: existing.output.direction, sessionId: existing.output.sessionId || null, resumed: true };
   await recordHandoff(assignment, `${fromAgent}-to-creative-production-core`, fromAgent, 'creative', { script: story.output, plan });
   await writeStep(assignment, { key: 'production-art-direction', position: 3, agentId: 'creative', title: 'Creative locks art direction and continuity', status: 'running', input: { script: story.output } });
   const result = await runNyoniAgent({
@@ -677,15 +690,27 @@ async function runCoreVox(assignment, story, preliminary) {
   if (new Set(story.packet.characters.map((character) => bindings[character.id])).size !== story.packet.characters.length) throw new Error('Vox requires two distinct voice IDs for the two characters.');
   await recordHandoff(assignment, 'motion-preliminary-to-vox', 'motion', 'vox', { dialogueSignature: story.packet.dialogueSignature, lineCount: story.packet.dialogue.length });
   await writeStep(assignment, { key: 'vox-dialogue', position: 5, agentId: 'vox', title: 'Vox performs the exact screenplay with two bound voices', status: 'running', input: { dialogueSignature: story.packet.dialogueSignature, voiceBindings: Object.keys(bindings), preliminary: preliminary.output } });
-  const audio = await generateVoxDialogueConversation(assignment, story.packet, bindings);
+  let audio;
+  try {
+    audio = await generateVoxDialogueConversation(assignment, story.packet, bindings);
+  } catch (error) {
+    const paymentIssue = /payment_issue|payment required|past_due|failed or incomplete payment/i.test(error?.message || '');
+    if (!paymentIssue || assignment.request?.production?.allowVoiceFallback === false) throw error;
+    await recordAssignmentEvent(assignment, 'vox.fallback', 'ElevenLabs billing was unavailable; Vox switched to two explicitly assigned OpenAI voices so production could continue.', { reason: 'elevenlabs_payment_issue', dialogueSignature: story.packet.dialogueSignature });
+    audio = await generateOpenAiDialogueFallback(assignment, story.packet);
+  }
   const media = audio.media || [];
-  if (media[0]?.dialogueSignature !== story.packet.dialogueSignature) throw new Error('Vox output changed the immutable dialogue mapping.');
-  await writeStep(assignment, { key: 'vox-dialogue', position: 5, agentId: 'vox', title: 'Vox performs the exact screenplay with two bound voices', status: 'done', output: { media, totalCostUsd: audio.totalCostUsd, dialogueSignature: story.packet.dialogueSignature, distinctVoiceCount: media[0]?.voiceIds?.length || 0, mode: 'ElevenLabs v4 multi-speaker dialogue' } });
-  return { output: 'One exact two-speaker ElevenLabs v4 dialogue master generated.', audio, agentId: 'vox' };
+  if (media.some((item) => item.dialogueSignature !== story.packet.dialogueSignature)) throw new Error('Vox output changed the immutable dialogue mapping.');
+  const distinctVoiceCount = new Set(media.flatMap((item) => item.voiceIds || [item.voiceId]).filter(Boolean)).size;
+  await writeStep(assignment, { key: 'vox-dialogue', position: 5, agentId: 'vox', title: 'Vox performs the exact screenplay with two bound voices', status: 'done', output: { media, totalCostUsd: audio.totalCostUsd, dialogueSignature: story.packet.dialogueSignature, distinctVoiceCount, mode: audio.fallbackReason ? 'OpenAI two-voice fallback after ElevenLabs billing outage' : 'ElevenLabs v4 multi-speaker dialogue', fallbackReason: audio.fallbackReason || null } });
+  return { output: audio.fallbackReason ? 'Vox generated exact line masters with two OpenAI voices after the ElevenLabs billing outage.' : 'One exact two-speaker ElevenLabs v4 dialogue master generated.', audio, agentId: 'vox' };
 }
 
 async function runCoreMotionPreliminary(assignment, plan, story, creative) {
   'use step';
+  const client = studioClient();
+  const { data: existing } = await client.from('nyoni_workflow_steps').select('output').eq('assignment_id', assignment.id).eq('step_key', 'motion-preliminary').eq('status', 'done').maybeSingle();
+  if (existing?.output?.preliminaryDirection) return { output: existing.output.preliminaryDirection, resumed: true };
   await recordHandoff(assignment, 'creative-to-motion-preliminary', 'creative', 'motion', { script: story.output, creative: creative.output });
   await writeStep(assignment, { key: 'motion-preliminary', position: 4, agentId: 'motion', title: 'Motion Preliminary designs blocking and audio requirements', status: 'running', input: { script: story.output } });
   const result = await runNyoniAgent({
@@ -738,7 +763,9 @@ async function buildCorePacket(assignment, story, creative, preliminary, sound, 
   }
   const audioReferences = (sound.audio?.media || []).filter((item) => item.type === 'audio' && item.url).map((item, index) => ({
     id: `vox-dialogue-${index + 1}`, assetId: item.assetId, url: item.url, role: 'dialogue',
-    label: `Vox exact two-speaker dialogue master ${index + 1}`, durationSeconds: null, preservation: 'exact_master',
+    label: item.lineId ? `Vox exact dialogue line ${item.lineId}` : `Vox exact two-speaker dialogue master ${index + 1}`,
+    durationSeconds: item.startSeconds !== undefined && item.endSeconds !== undefined ? Math.max(0.1, Number(item.endSeconds) - Number(item.startSeconds)) : null,
+    ...(item.speakerId ? { characterId: item.speakerId } : {}), preservation: 'exact_master',
   }));
   const referenceAssetIds = [...new Set([...(requested.referenceAssetIds || []), ...(visualReference?.media || []).map((item) => item.assetId).filter(Boolean)])];
   let packet = await resolveProductionContext(assignment, {
@@ -766,10 +793,17 @@ async function buildCorePacket(assignment, story, creative, preliminary, sound, 
     voicePolicy: { mode: 'bound-synthetic-voice', allowAutomaticVoiceSelection: false, voiceProfileId: null, instructions: ['Use only the explicit Vox dialogue master and its character-to-voice bindings.', `Immutable dialogue signature: ${story.packet.dialogueSignature}.`] },
   };
   packet = { ...packet, budget: { ...packet.budget, estimatedUsd: estimateProviderCost(packet).estimatedUsd } };
-  const motionDraft = await runNyoniAgent({
-    agentId: 'motion', project: assignment.projectName, projectContext: assignment.projectContext,
-    title: `You are Motion FINAL. Using the authoritative packet, Motion Preliminary, actual Vox dialogue master, and approved art direction, create the definitive director-grade shot direction. You MUST NOT rewrite, reorder, omit, paraphrase, or reassign dialogue; preserve signature ${story.packet.dialogueSignature}. Reconcile visual timing around the actual audio. Specify the single goal, every reference role and exclusion, identity locks, exact screen-left/right blocking, action axis, speaker-to-listener eyelines for every line, listener reactions, expressive facial acting, lens/camera, environment/materials, exact timestamps, physics/contact, end-state continuity, synchronized audio cues, and shot-specific negative constraints. Never discard a critical reference.\n\nSTRUCTURED SCRIPT:\n${JSON.stringify(story.packet)}\n\nMOTION PRELIMINARY:\n${preliminary.output}\n\nAPPROVED ART DIRECTION:\n${creative.output}\n\nVOX MASTER MANIFEST:\n${JSON.stringify(sound.audio?.media || [])}\n\nVISUAL REFERENCES:\n${packet.references.map((item, index) => `@Image ${index + 1}: ${item.label} — ${item.role} — ${item.priority}`).join('\n') || 'None'}\nAUDIO REFERENCES:\n${audioReferences.map((item, index) => `@Audio ${index + 1}: ${item.label} — ${item.url}`).join('\n') || 'None'}`,
+  const motionText = `You are Motion FINAL. Inspect the ACTUAL generated starting-frame image(s) attached below before writing the video direction. Using those exact visible identities, props, composition and room geography, the authoritative packet, Motion Preliminary, actual Vox dialogue masters, and approved art direction, create the definitive director-grade shot direction. You MUST NOT rewrite, reorder, omit, paraphrase, or reassign dialogue; preserve signature ${story.packet.dialogueSignature}. Reconcile visual timing around the actual audio. Specify the single goal, every reference role and exclusion, identity locks, exact screen-left/right blocking, action axis, speaker-to-listener eyelines for every line, listener reactions, expressive facial acting, lens/camera, environment/materials, exact timestamps, physics/contact, end-state continuity, synchronized audio cues, and shot-specific negative constraints. Never discard a critical reference.\n\nSTRUCTURED SCRIPT:\n${JSON.stringify(story.packet)}\n\nMOTION PRELIMINARY:\n${preliminary.output}\n\nAPPROVED ART DIRECTION:\n${creative.output}\n\nVOX MASTER MANIFEST:\n${JSON.stringify(sound.audio?.media || [])}\n\nVISUAL REFERENCES:\n${packet.references.map((item, index) => `@Image ${index + 1}: ${item.label} — ${item.role} — ${item.priority}`).join('\n') || 'None'}\nAUDIO REFERENCES:\n${audioReferences.map((item, index) => `@Audio ${index + 1}: ${item.label} — ${item.url}`).join('\n') || 'None'}`;
+  const motionOpenAI = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const motionResponse = await motionOpenAI.responses.create({
+    model: process.env.NYONI_MOTION_MODEL || 'gpt-5.5',
+    input: [{ role: 'user', content: [
+      { type: 'input_text', text: motionText },
+      ...packet.references.map((item) => ({ type: 'input_image', image_url: item.url })),
+    ] }],
   });
+  const motionDraft = { output: motionResponse.output_text || '', sessionId: motionResponse.id };
+  if (!motionDraft.output) throw new Error('Motion Final inspected the starting frame but returned no directing packet.');
   packet = { ...packet, motionPrompt: buildMotionProductionPrompt(packet, { goal: motionDraft.output }) };
   const persisted = await persistProductionPacket(packet);
   await writeStep(assignment, { key: 'production-context', position: 6, agentId: 'motion', title: 'Motion Final compiles the Director Shot Packet', status: packet.blockers.length ? 'failed' : 'done', output: { packetId: persisted.id, schemaVersion: packet.schemaVersion, packetVersion: packet.packetVersion, blockers: packet.blockers, referenceManifest: packet.references.map((item, position) => ({ token: `@Image ${position + 1}`, position: position + 1, id: item.id, role: item.role, priority: item.priority })), audioManifest: packet.audioReferences.map((item, position) => ({ token: `@Audio ${position + 1}`, id: item.id, assetId: item.assetId, durationSeconds: item.durationSeconds })) }, error: packet.blockers.length ? packet.blockers.map((item) => item.message).join(' ') : null });

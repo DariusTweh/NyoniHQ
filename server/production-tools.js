@@ -222,6 +222,49 @@ export async function generateVoxDialogueConversation(assignment, storyPacket, v
   }
 }
 
+export async function generateOpenAiDialogueFallback(assignment, storyPacket) {
+  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not connected for Vox fallback.');
+  const client = studioClient();
+  const voices = ['onyx', 'shimmer'];
+  const voiceByCharacter = Object.fromEntries(storyPacket.characters.map((character, index) => [character.id, voices[index]]));
+  const media = []; let totalCostUsd = 0;
+  for (const line of storyPacket.dialogue) {
+    const config = { provider: 'openai', model: 'gpt-4o-mini-tts', kind: 'text-to-speech', contentType: 'audio', estimatedCostUsd: 0.01 };
+    const idempotencyKey = `${assignment.id}:vox:openai-fallback:${line.id}:${storyPacket.dialogueSignature}`;
+    const reservation = await reserveBudget(assignment, config, config.estimatedCostUsd, idempotencyKey);
+    try {
+      const { data: prior } = await client.from('nyoni_tool_runs').select('output,cost_usd').eq('owner_id', assignment.owner_id).eq('idempotency_key', idempotencyKey).eq('status', 'done').maybeSingle();
+      if (prior?.output?.media?.[0]?.url) {
+        await setReservationState(reservation.id, 'released');
+        media.push(prior.output.media[0]);
+        continue;
+      }
+      const voice = voiceByCharacter[line.speakerId];
+      const response = await fetch('https://api.openai.com/v1/audio/speech', {
+        method: 'POST', headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: config.model, voice, input: line.text, instructions: `${line.emotion}. ${line.performance}. Speak naturally to the other character; do not add or change words.`, response_format: 'mp3' }), signal: AbortSignal.timeout(120000),
+      });
+      if (!response.ok) throw new Error(`OpenAI Vox fallback failed for ${line.id}: HTTP ${response.status} ${(await response.text()).slice(0, 500)}`);
+      const storagePath = `${assignment.owner_id}/${assignment.id}/vox-fallback-${line.id}.mp3`;
+      const { error: uploadError } = await client.storage.from('nyoni-artifacts').upload(storagePath, Buffer.from(await response.arrayBuffer()), { contentType: 'audio/mpeg', upsert: true });
+      if (uploadError) throw new Error(`Vox fallback upload failed: ${uploadError.message}`);
+      const url = client.storage.from('nyoni-artifacts').getPublicUrl(storagePath).data.publicUrl;
+      const { data: asset, error: assetError } = await client.from('assets').insert({ user_id: assignment.owner_id, project_id: assignment.project_id, type: 'audio', url, storage_path: storagePath, provider: config.provider, model: config.model, prompt: line.text, metadata: { assignmentId: assignment.id, role: 'dialogue_master', fallbackReason: 'elevenlabs_payment_issue', dialogueSignature: storyPacket.dialogueSignature, lineId: line.id, speakerId: line.speakerId, recipientId: line.recipientId, voice, plannedStartSeconds: line.startSeconds, plannedEndSeconds: line.endSeconds, preservation: 'exact_master' } }).select('id').single();
+      if (assetError) throw new Error(`Vox fallback asset failed: ${assetError.message}`);
+      const item = { url, assetId: asset.id, type: 'audio', kind: 'dialogue', provider: config.provider, model: config.model, playable: true, role: 'dialogue_master', lineId: line.id, speakerId: line.speakerId, recipientId: line.recipientId, voiceId: voice, text: line.text, startSeconds: line.startSeconds, endSeconds: line.endSeconds, dialogueSignature: storyPacket.dialogueSignature, fallbackReason: 'elevenlabs_payment_issue' };
+      const { data: toolRun, error: runError } = await client.from('nyoni_tool_runs').insert({ assignment_id: assignment.id, owner_id: assignment.owner_id, tool_name: 'dialogue-voice-fallback', provider: config.provider, status: 'done', idempotency_key: idempotencyKey, input: { lineId: line.id, speakerId: line.speakerId, voice }, output: { media: [item] }, cost_usd: config.estimatedCostUsd, completed_at: new Date().toISOString() }).select('id').single();
+      if (runError) throw new Error(`Vox fallback tool run failed: ${runError.message}`);
+      await client.from('nyoni_usage_ledger').insert({ owner_id: assignment.owner_id, project_id: assignment.project_id, assignment_id: assignment.id, tool_run_id: toolRun.id, provider: config.provider, model: config.model, units: { characters: line.text.length, generations: 1 }, cost_usd: config.estimatedCostUsd });
+      await setReservationState(reservation.id, 'captured', config.estimatedCostUsd);
+      media.push(item); totalCostUsd += config.estimatedCostUsd;
+    } catch (error) {
+      await setReservationState(reservation.id, 'released').catch(() => {});
+      throw error;
+    }
+  }
+  return { media, totalCostUsd, provider: 'openai', model: 'gpt-4o-mini-tts', fallbackReason: 'elevenlabs_payment_issue' };
+}
+
 async function findReusableCompletedJob(assignment, config, packet, reservationId, estimate) {
   const client = studioClient();
   let query = client.from('generation_jobs').select('id,provider_job_id,output,input,updated_at')
@@ -323,6 +366,9 @@ export async function pollStudioGeneration(assignment, job) {
 export async function persistStudioGeneration(assignment, job) {
   if (job.status !== 'completed' || !job.urls?.length) throw new Error('Studio provider completed without a usable media URL.');
   const client = studioClient(); const media = [];
+  const persistenceKey = `${assignment.id}:${job.kind}:${job.jobId}`;
+  const { data: existingRun } = await client.from('nyoni_tool_runs').select('output,cost_usd,provider').eq('owner_id', assignment.owner_id).eq('idempotency_key', persistenceKey).eq('status', 'done').maybeSingle();
+  if (existingRun?.output?.media?.length) return { media: existingRun.output.media, totalCostUsd: 0, provider: job.provider, model: job.model, kind: job.kind, reusedPersistedMedia: true };
   for (let index = 0; index < job.urls.length; index += 1) {
     const response = await fetch(job.urls[index], { signal: AbortSignal.timeout(120000) });
     if (!response.ok) throw new Error(`Generated media download failed with HTTP ${response.status}.`);
@@ -342,7 +388,7 @@ export async function persistStudioGeneration(assignment, job) {
   }
   const { data: toolRun, error: runError } = await client.from('nyoni_tool_runs').insert({
     assignment_id: assignment.id, owner_id: assignment.owner_id, tool_name: job.kind, provider: job.provider, status: 'done',
-    idempotency_key: `${assignment.id}:${job.kind}:${job.jobId}`, input: { productionPacketId: job.productionPacketId || null, sourceAssetId: assignment.request?.sourceAssetId || null },
+    idempotency_key: persistenceKey, input: { productionPacketId: job.productionPacketId || null, sourceAssetId: assignment.request?.sourceAssetId || null },
     output: { media, generationJobId: job.jobId }, cost_usd: job.estimatedCostUsd, completed_at: new Date().toISOString(),
   }).select('id').single();
   if (runError) throw new Error(`Media tool run record failed: ${runError.message}`);
